@@ -2,34 +2,229 @@
   <div class="panel-content">
     <div class="section-header">
       <h3 class="section-heading">Cuotas</h3>
+      <button id="btn-fees-refresh" type="button" class="btn-secondary">Actualizar</button>
     </div>
 
-    <form id="fees-form" class="martial-form fees-form">
-      <div class="form-grid">
-        <label class="form-field">
-          <span>Alumno</span>
-          <input id="fees-student-name" type="text" placeholder="Buscar Alumno por nombre" autocomplete="off" />
-          <input id="fees-student-id" type="hidden" required />
-          <div id="fees-student-suggestions" class="student-suggestions"></div>
+    <div class="fees-layout">
+      <section class="fees-column fees-column-left">
+        <h4 class="subheading">Resumen</h4>
+        <label class="form-field form-field-full">
+          <span>Buscar alumno</span>
+          <input id="fees-search" type="text" placeholder="Apellido, nombre..." autocomplete="off" />
         </label>
-        <label class="form-field">
-          <span>Fecha de pago</span>
-          <input id="fees-payment-date" type="text" />
-        </label>
-        <label class="form-field">
-          <span>Monto</span>
-          <input id="fees-amount" type="number" min="0" step="0.01" />
-        </label>
-      </div>
-      <div class="form-actions">
-        <button type="button" id="btn-load-fees" class="btn-secondary">Ver estado</button>
-        <button type="submit" class="btn-martial">Registrar pago</button>
-      </div>
-    </form>
 
-    <div id="fees-status" class="fees-status">
-      <h4 class="subheading">Estado del alumno</h4>
-      <div id="fees-status-body" class="fees-status-body">Buscá un alumno para ver su estado de cuotas.</div>
+        <div class="table-wrapper">
+          <table class="students-table fees-overview-table">
+            <thead>
+              <tr>
+                <th>Alumno</th>
+                <th>Estado</th>
+                <th>Deuda</th>
+                <th>Último pago</th>
+              </tr>
+            </thead>
+            <tbody id="fees-overview-tbody"></tbody>
+          </table>
+          <div id="fees-overview-empty" class="students-empty-state">
+            No hay alumnos activos para mostrar.
+          </div>
+        </div>
+
+        <h4 class="subheading">Acciones del mes</h4>
+        <div class="martial-form fees-bulk-form">
+          <div class="form-grid">
+            <label class="form-field">
+              <span>Período</span>
+              <input id="fees-bulk-period" type="text" placeholder="Seleccionar período" />
+            </label>
+            <label class="form-field">
+              <span>Prorrateo</span>
+              <select id="fees-bulk-proration-mode">
+                <option value="percent">Por porcentaje</option>
+                <option value="days">Por días (usa inicio)</option>
+              </select>
+            </label>
+            <label class="form-field">
+              <span>%</span>
+              <input id="fees-bulk-proration-percent" type="number" min="0" max="100" step="0.01" placeholder="100" />
+            </label>
+            <label class="form-field">
+              <span>Inicio</span>
+              <input id="fees-bulk-start-date" type="text" placeholder="Seleccionar fecha" />
+            </label>
+          </div>
+          <div class="form-actions">
+            <button id="btn-fees-generate-month" type="button" class="btn-martial">Generar cuotas para activos</button>
+          </div>
+        </div>
+
+        <h4 class="subheading">Configuración</h4>
+        <div class="fees-config-box">
+          <div class="form-grid">
+            <label class="form-field">
+              <span>Tarifa mensual (ARS)</span>
+              <input id="fees-config-monthly" type="number" min="0" step="0.01" placeholder="0" />
+            </label>
+            <label class="form-field">
+              <span>Vence día</span>
+              <input id="fees-config-due-day" type="number" min="1" max="28" step="1" placeholder="10" />
+            </label>
+            <label class="form-field">
+              <span>Prorrateo default</span>
+              <select id="fees-config-proration-mode">
+                <option value="days">Por días del mes</option>
+                <option value="percent">Por porcentaje</option>
+              </select>
+            </label>
+            <label class="form-field">
+              <span>% prorrateo (default)</span>
+              <input id="fees-config-proration-percent" type="number" min="0" max="100" step="0.01" placeholder="100" />
+            </label>
+          </div>
+          <div class="form-actions">
+            <button type="button" id="btn-save-fees-config" class="btn-secondary">Guardar config</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="fees-column fees-column-right">
+        <h4 class="subheading">Detalle</h4>
+
+        <div id="fees-student-empty" class="fees-student-empty text-muted">
+          Seleccioná un alumno del resumen para ver sus cuotas y registrar pagos.
+        </div>
+
+        <div id="fees-student-content" class="fees-student-content hidden">
+          <div class="fees-student-header">
+            <div>
+              <div id="fees-student-name" class="fees-student-name"></div>
+              <div id="fees-student-meta" class="text-muted"></div>
+            </div>
+            <div id="fees-student-status"></div>
+          </div>
+
+          <h4 class="subheading">Cuotas</h4>
+          <div class="martial-form fees-generate-form">
+            <div class="form-grid">
+              <label class="form-field">
+                <span>Período</span>
+                <input id="fees-charge-period" type="text" placeholder="Seleccionar período" />
+              </label>
+              <label class="form-field">
+                <span>Prorrateo</span>
+                <select id="fees-charge-proration-mode">
+                  <option value="percent">Por porcentaje</option>
+                  <option value="days">Por días (usa inicio)</option>
+                </select>
+              </label>
+              <label class="form-field">
+                <span>%</span>
+                <input id="fees-charge-proration-percent" type="number" min="0" max="100" step="0.01" placeholder="100" />
+              </label>
+              <label class="form-field">
+                <span>Inicio</span>
+                <input id="fees-charge-start-date" type="text" placeholder="Seleccionar fecha" />
+              </label>
+            </div>
+            <div class="form-actions">
+              <button id="btn-fees-generate-student" type="button" class="btn-secondary">Generar cuota</button>
+            </div>
+          </div>
+
+          <div class="table-wrapper">
+            <table class="students-table fees-charges-table">
+              <thead>
+                <tr>
+                  <th>Período</th>
+                  <th>Vence</th>
+                  <th>Total</th>
+                  <th>Pagado</th>
+                  <th>Saldo</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody id="fees-charges-tbody"></tbody>
+            </table>
+            <div id="fees-charges-empty" class="students-empty-state">Aún no hay cuotas generadas.</div>
+          </div>
+
+          <h4 class="subheading">Registrar pago</h4>
+          <form id="fees-payment-form" class="martial-form fees-payment-form">
+            <div class="form-grid">
+              <label class="form-field">
+                <span>Fecha</span>
+                <input id="fees-payment-date" type="text" />
+              </label>
+              <label class="form-field">
+                <span>Monto</span>
+                <input id="fees-payment-amount" type="number" min="0" step="0.01" />
+              </label>
+              <label class="form-field">
+                <span>Método</span>
+                <select id="fees-payment-method">
+                  <option value="cash">Efectivo</option>
+                  <option value="transfer">Transferencia</option>
+                </select>
+              </label>
+              <label class="form-field">
+                <span>Referencia</span>
+                <input id="fees-payment-reference" type="text" placeholder="N° operación" />
+              </label>
+              <label class="form-field form-field-full">
+                <span>Notas</span>
+                <input id="fees-payment-notes" type="text" placeholder="Opcional" />
+              </label>
+            </div>
+
+            <div class="fees-apply-box">
+              <div class="text-muted">Aplicar a cuotas (por defecto: todas las pendientes)</div>
+              <div id="fees-apply-list" class="fees-apply-list"></div>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn-martial">Registrar pago</button>
+            </div>
+          </form>
+
+          <h4 class="subheading">Pagos</h4>
+          <div class="table-wrapper">
+            <table class="students-table fees-payments-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Monto</th>
+                  <th>Método</th>
+                  <th>Ref</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="fees-payments-tbody"></tbody>
+            </table>
+            <div id="fees-payments-empty" class="students-empty-state">Aún no hay pagos registrados.</div>
+          </div>
+
+          <h4 class="subheading">Descuento del alumno</h4>
+          <form id="fees-discount-form" class="martial-form fees-discount-form">
+            <div class="form-grid">
+              <label class="form-field">
+                <span>Tipo</span>
+                <select id="fees-discount-type">
+                  <option value="">Sin descuento</option>
+                  <option value="percent">% (por ejemplo 20)</option>
+                  <option value="amount">$ (por ejemplo 1000)</option>
+                </select>
+              </label>
+              <label class="form-field">
+                <span>Valor</span>
+                <input id="fees-discount-value" type="number" min="0" step="0.01" />
+              </label>
+            </div>
+            <div class="form-actions">
+              <button id="btn-save-fees-discount" type="submit" class="btn-secondary">Guardar descuento</button>
+            </div>
+          </form>
+        </div>
+      </section>
     </div>
   </div>
 </div>

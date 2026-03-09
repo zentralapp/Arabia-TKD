@@ -10,6 +10,7 @@ from datetime import datetime, date
 from copy import deepcopy
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 import os
 
 # ...
@@ -59,6 +60,27 @@ with app.app_context():
         # Si falla (por ejemplo en SQLite viejo), se ignora y se asume que la tabla se recreará en limpio.
         pass
 
+    # Asegurar columnas nuevas en fee_payments (migración liviana, idempotente)
+    try:
+        from sqlalchemy import text
+
+        with db.engine.connect() as conn:
+            try:
+                conn.execute(text("ALTER TABLE fee_payments ADD COLUMN method TEXT DEFAULT 'cash'"))
+            except Exception:
+                pass
+            try:
+                conn.execute(text("ALTER TABLE fee_payments ADD COLUMN reference TEXT"))
+            except Exception:
+                pass
+            try:
+                conn.execute(text("ALTER TABLE fee_payments ADD COLUMN notes TEXT"))
+            except Exception:
+                pass
+
+            conn.commit()
+    except Exception:
+        pass
 
 class Student(db.Model):
     __tablename__ = "students"
@@ -116,6 +138,58 @@ class FeePayment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     student_id = db.Column(db.Integer, db.ForeignKey("students.id"), nullable=False)
     payment_date = db.Column(db.String(10), nullable=False)  # YYYY-MM-DD
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+    method = db.Column(db.String(20), default='cash')  # 'cash' | 'transfer'
+    reference = db.Column(db.String(120))
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class FeeConfig(db.Model):
+    __tablename__ = "fee_config"
+
+    id = db.Column(db.Integer, primary_key=True)
+    monthly_amount = db.Column(db.Numeric(10, 2), nullable=False, default=0)
+    due_day = db.Column(db.Integer, nullable=False, default=10)
+    proration_mode = db.Column(db.String(20), nullable=False, default='days')  # 'days' | 'percent'
+    proration_percent_default = db.Column(db.Numeric(5, 2), nullable=False, default=100)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class StudentFeeSettings(db.Model):
+    __tablename__ = "student_fee_settings"
+
+    student_id = db.Column(db.Integer, db.ForeignKey("students.id"), primary_key=True)
+    discount_type = db.Column(db.String(20))  # 'percent' | 'amount'
+    discount_value = db.Column(db.Numeric(10, 2), nullable=False, default=0)
+
+
+class FeeCharge(db.Model):
+    __tablename__ = "fee_charges"
+
+    id = db.Column(db.Integer, primary_key=True)
+    student_id = db.Column(db.Integer, db.ForeignKey("students.id"), nullable=False)
+    period = db.Column(db.String(7), nullable=False)  # YYYY-MM
+    due_date = db.Column(db.Date, nullable=False)
+    base_amount = db.Column(db.Numeric(10, 2), nullable=False, default=0)
+    discount_amount = db.Column(db.Numeric(10, 2), nullable=False, default=0)
+    proration_mode = db.Column(db.String(20), nullable=False, default='percent')  # 'days' | 'percent'
+    proration_percent = db.Column(db.Numeric(5, 2), nullable=False, default=100)
+    proration_start_date = db.Column(db.Date)
+    final_amount = db.Column(db.Numeric(10, 2), nullable=False, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('student_id', 'period', name='uq_fee_charges_student_period'),
+    )
+
+
+class FeeAllocation(db.Model):
+    __tablename__ = "fee_allocations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    payment_id = db.Column(db.Integer, db.ForeignKey("fee_payments.id"), nullable=False)
+    charge_id = db.Column(db.Integer, db.ForeignKey("fee_charges.id"), nullable=False)
     amount = db.Column(db.Numeric(10, 2), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -272,7 +346,23 @@ def api_student_detail(student_id: int):
 
     if request.method == 'DELETE':
         # Borramos primero todas las cuotas asociadas a este alumno
-        FeePayment.query.filter_by(student_id=student.id).delete()
+        try:
+            _ensure_fees_tables()
+        except Exception:
+            pass
+
+        try:
+            FeeAllocation.query.filter(
+                FeeAllocation.payment_id.in_(
+                    db.session.query(FeePayment.id).filter_by(student_id=student.id)
+                )
+            ).delete(synchronize_session=False)
+            FeePayment.query.filter_by(student_id=student.id).delete()
+            FeeCharge.query.filter_by(student_id=student.id).delete()
+            StudentFeeSettings.query.filter_by(student_id=student.id).delete()
+        except Exception:
+            # Si las tablas no existen aún o hay algún problema, seguimos con el borrado del alumno.
+            db.session.rollback()
 
         # Luego borramos el alumno en sí
         db.session.delete(student)
@@ -404,94 +494,707 @@ def api_exam_students(event_id: int):
 
 # --- Fees ---
 
-def _compute_fees_status(student_id: int):
-    payments = (
-        FeePayment.query
-        .filter_by(student_id=student_id)
-        .order_by(FeePayment.payment_date.asc())
-        .all()
-    )
-
-    if not payments:
-        return {'student_id': student_id, 'status': 'sin_registro', 'history': []}
-
-    last_payment = payments[-1].payment_date
+def _ensure_fees_tables():
     try:
-        last_dt = datetime.strptime(last_payment, '%Y-%m-%d').date()
-    except ValueError:
-        last_dt = None
+        db.create_all()
+    except Exception:
+        pass
 
-    today = date.today()
-    if last_dt is None:
-        status = 'sin_registro'
+
+def _get_fee_config():
+    _ensure_fees_tables()
+    cfg = FeeConfig.query.order_by(FeeConfig.id.asc()).first()
+    if not cfg:
+        cfg = FeeConfig(monthly_amount=0, due_day=10, proration_mode='days', proration_percent_default=100)
+        db.session.add(cfg)
+        db.session.commit()
+    return cfg
+
+
+def _get_student_fee_settings(student_id: int):
+    _ensure_fees_tables()
+    settings = StudentFeeSettings.query.filter_by(student_id=student_id).first()
+    if not settings:
+        settings = StudentFeeSettings(student_id=student_id, discount_type=None, discount_value=0)
+        db.session.add(settings)
+        db.session.commit()
+    return settings
+
+
+def _parse_period(period_raw: str):
+    value = (period_raw or '').strip()
+    if len(value) != 7 or value[4] != '-':
+        return None
+    y = value[:4]
+    m = value[5:]
+    try:
+        year = int(y)
+        month = int(m)
+    except Exception:
+        return None
+    if month < 1 or month > 12:
+        return None
+    return {'year': year, 'month': month, 'period': f'{year:04d}-{month:02d}'}
+
+
+def _parse_iso_date(date_raw):
+    value = (date_raw or '').strip() if isinstance(date_raw, str) else date_raw
+    if not value:
+        return None
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.strptime(str(value), '%Y-%m-%d').date()
+    except Exception:
+        return None
+
+
+def _list_periods_from_range(start_raw, end_raw):
+    start_date = _parse_iso_date(start_raw)
+    end_date = _parse_iso_date(end_raw)
+    if not start_date or not end_date:
+        return []
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    periods = []
+    year = start_date.year
+    month = start_date.month
+    while (year < end_date.year) or (year == end_date.year and month <= end_date.month):
+        periods.append({'year': year, 'month': month, 'period': f'{year:04d}-{month:02d}'})
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    return periods
+
+
+def _create_fee_charge(student_id: int, cfg: FeeConfig, settings: StudentFeeSettings, period_info, body):
+    existing = FeeCharge.query.filter_by(student_id=student_id, period=period_info['period']).first()
+    if existing:
+        return False
+
+    base_amount = float(cfg.monthly_amount or 0)
+    discount_amount = _compute_discount_amount(base_amount, settings)
+
+    proration_mode = body.get('proration_mode')
+    start_date_raw = body.get('start_date')
+    proration_percent_raw = body.get('proration_percent')
+    proration = _compute_proration_percent(cfg, period_info, proration_mode, start_date_raw, proration_percent_raw)
+
+    net = base_amount - discount_amount
+    if net < 0:
+        net = 0
+    final_amount = round(net * (float(proration['percent']) / 100.0), 2)
+
+    year = period_info['year']
+    month = period_info['month']
+    due_day = int(cfg.due_day or 10)
+    dim = _days_in_month(year, month)
+    if due_day > dim:
+        due_day = dim
+    due_date = date(year, month, due_day)
+
+    charge = FeeCharge(
+        student_id=student_id,
+        period=period_info['period'],
+        due_date=due_date,
+        base_amount=round(base_amount, 2),
+        discount_amount=round(discount_amount, 2),
+        proration_mode=proration['mode'],
+        proration_percent=proration['percent'],
+        proration_start_date=proration['start_date'],
+        final_amount=final_amount,
+    )
+    db.session.add(charge)
+    return True
+
+
+def _days_in_month(year: int, month: int):
+    if month == 12:
+        next_month = date(year + 1, 1, 1)
     else:
-        delta_days = (today - last_dt).days
-        status = 'al_dia' if delta_days <= 30 else 'vencida'
+        next_month = date(year, month + 1, 1)
+    return (next_month - date(year, month, 1)).days
 
-    history = [
-        {
+
+def _compute_discount_amount(base_amount: float, settings: StudentFeeSettings):
+    dtype = (settings.discount_type or '').strip().lower()
+    try:
+        dval = float(settings.discount_value or 0)
+    except Exception:
+        dval = 0
+    if dval < 0:
+        dval = 0
+    if dtype == 'percent':
+        discount = base_amount * (dval / 100.0)
+    elif dtype == 'amount':
+        discount = dval
+    else:
+        discount = 0
+    if discount > base_amount:
+        discount = base_amount
+    return round(discount, 2)
+
+
+def _compute_proration_percent(cfg: FeeConfig, period_info, proration_mode: str, start_date_raw: str, proration_percent_raw):
+    mode = (proration_mode or cfg.proration_mode or 'days').strip().lower()
+    if mode not in ('days', 'percent'):
+        mode = 'days'
+
+    if mode == 'percent':
+        if proration_percent_raw is None or proration_percent_raw == '':
+            try:
+                pct = float(cfg.proration_percent_default or 100)
+            except Exception:
+                pct = 100
+        else:
+            try:
+                pct = float(proration_percent_raw)
+            except Exception:
+                pct = 100
+        if pct < 0:
+            pct = 0
+        if pct > 100:
+            pct = 100
+        return {'mode': 'percent', 'percent': round(pct, 2), 'start_date': None}
+
+    start_date = None
+    if start_date_raw:
+        try:
+            start_date = datetime.strptime(start_date_raw, '%Y-%m-%d').date()
+        except Exception:
+            start_date = None
+    if not start_date:
+        try:
+            pct = float(cfg.proration_percent_default or 100)
+        except Exception:
+            pct = 100
+        if pct < 0:
+            pct = 0
+        if pct > 100:
+            pct = 100
+        return {'mode': 'days', 'percent': round(pct, 2), 'start_date': None}
+
+    year = period_info['year']
+    month = period_info['month']
+    dim = _days_in_month(year, month)
+    if start_date.year != year or start_date.month != month:
+        pct = 100
+    else:
+        remaining = dim - start_date.day + 1
+        if remaining < 0:
+            remaining = 0
+        pct = (remaining / dim) * 100.0
+    if pct < 0:
+        pct = 0
+    if pct > 100:
+        pct = 100
+    return {'mode': 'days', 'percent': round(pct, 2), 'start_date': start_date}
+
+
+def _get_charge_allocated_amounts(charge_ids):
+    if not charge_ids:
+        return {}
+    allocations = FeeAllocation.query.filter(FeeAllocation.charge_id.in_(charge_ids)).all()
+    out = {}
+    for a in allocations:
+        out[a.charge_id] = out.get(a.charge_id, 0.0) + float(a.amount)
+    return out
+
+
+def _serialize_student_fees(student_id: int):
+    _ensure_fees_tables()
+    cfg = _get_fee_config()
+    settings = _get_student_fee_settings(student_id)
+
+    charges = FeeCharge.query.filter_by(student_id=student_id).order_by(FeeCharge.period.desc()).all()
+    charge_ids = [c.id for c in charges]
+    allocated_map = _get_charge_allocated_amounts(charge_ids)
+    today = date.today()
+
+    charges_out = []
+    overdue_total = 0.0
+    for c in charges:
+        paid = allocated_map.get(c.id, 0.0)
+        total = float(c.final_amount or 0)
+        balance = round(total - paid, 2)
+        if balance < 0:
+            balance = 0.0
+
+        if balance == 0 and total > 0:
+            status = 'paid'
+        elif paid > 0:
+            status = 'partial'
+        else:
+            status = 'pending'
+
+        is_overdue = (c.due_date is not None) and (today > c.due_date) and (status != 'paid')
+        if is_overdue:
+            overdue_total += balance
+
+        charges_out.append({
+            'id': c.id,
+            'period': c.period,
+            'due_date': c.due_date.isoformat() if c.due_date else None,
+            'base_amount': float(c.base_amount or 0),
+            'discount_amount': float(c.discount_amount or 0),
+            'proration_mode': c.proration_mode,
+            'proration_percent': float(c.proration_percent or 0),
+            'proration_start_date': c.proration_start_date.isoformat() if c.proration_start_date else None,
+            'final_amount': total,
+            'paid_amount': round(paid, 2),
+            'balance': balance,
+            'status': status,
+            'overdue': is_overdue,
+        })
+
+    payments = FeePayment.query.filter_by(student_id=student_id).order_by(FeePayment.payment_date.desc(), FeePayment.id.desc()).all()
+    payment_ids = [p.id for p in payments]
+    allocations = []
+    if payment_ids:
+        allocations = FeeAllocation.query.filter(FeeAllocation.payment_id.in_(payment_ids)).all()
+    alloc_by_payment = {}
+    for a in allocations:
+        alloc_by_payment.setdefault(a.payment_id, []).append({
+            'id': a.id,
+            'charge_id': a.charge_id,
+            'amount': float(a.amount),
+        })
+
+    payments_out = []
+    for p in payments:
+        payments_out.append({
             'id': p.id,
-            'date': p.payment_date,
+            'payment_date': p.payment_date,
             'amount': float(p.amount),
+            'method': getattr(p, 'method', None),
+            'reference': getattr(p, 'reference', None),
+            'notes': getattr(p, 'notes', None),
+            'allocations': alloc_by_payment.get(p.id, []),
+        })
+
+    history_out = [
+        {
+            'id': p['id'],
+            'date': p['payment_date'],
+            'amount': p['amount'],
+            'method': p.get('method'),
+            'reference': p.get('reference'),
+            'notes': p.get('notes'),
         }
-        for p in payments
+        for p in payments_out
     ]
+
+    balance_total = 0.0
+    for c in charges_out:
+        try:
+            balance_total += float(c.get('balance') or 0)
+        except Exception:
+            continue
+
+    last_payment = payments[0].payment_date if payments else None
+
+    if not charges_out:
+        if not last_payment:
+            status = 'sin_registro'
+        else:
+            # Compatibilidad con el comportamiento legacy mientras no existan cuotas por período
+            try:
+                last_dt = datetime.strptime(last_payment, '%Y-%m-%d').date()
+                delta_days = (date.today() - last_dt).days
+                status = 'al_dia' if delta_days <= 30 else 'vencida'
+            except Exception:
+                status = 'sin_registro'
+    elif overdue_total > 0:
+        status = 'vencida'
+    elif balance_total > 0:
+        status = 'pendiente'
+    else:
+        status = 'al_dia'
 
     return {
         'student_id': student_id,
         'status': status,
+        'overdue_total': round(overdue_total, 2),
+        'balance_total': round(balance_total, 2),
         'last_payment': last_payment,
-        'history': history,
+        'config': {
+            'monthly_amount': float(cfg.monthly_amount or 0),
+            'due_day': int(cfg.due_day or 10),
+            'proration_mode': cfg.proration_mode or 'days',
+            'proration_percent_default': float(cfg.proration_percent_default or 100),
+        },
+        'settings': {
+            'discount_type': settings.discount_type,
+            'discount_value': float(settings.discount_value or 0),
+        },
+        'charges': charges_out,
+        'payments': payments_out,
+        'history': history_out,
     }
+
+
+@app.route('/api/fees/config', methods=['GET', 'PUT'])
+def api_fees_config():
+    cfg = _get_fee_config()
+    if not cfg:
+        cfg = FeeConfig(monthly_amount=0, due_day=10, proration_mode='days', proration_percent_default=100)
+        db.session.add(cfg)
+        db.session.commit()
+
+    if request.method == 'GET':
+        return jsonify({
+            'monthly_amount': float(cfg.monthly_amount or 0),
+            'due_day': int(cfg.due_day or 10),
+            'proration_mode': cfg.proration_mode or 'days',
+            'proration_percent_default': float(cfg.proration_percent_default or 100),
+        })
+
+    data = request.json or {}
+    if 'monthly_amount' in data:
+        try:
+            cfg.monthly_amount = float(data.get('monthly_amount') or 0)
+        except (TypeError, ValueError):
+            cfg.monthly_amount = 0
+
+    if 'due_day' in data:
+        try:
+            due_day = int(data.get('due_day') or 10)
+        except (TypeError, ValueError):
+            due_day = 10
+        if due_day < 1:
+            due_day = 1
+        if due_day > 28:
+            # Para evitar problemas con Febrero, por ahora limitamos a 28.
+            due_day = 28
+        cfg.due_day = due_day
+
+    if 'proration_mode' in data:
+        mode = str(data.get('proration_mode') or '').strip().lower()
+        if mode in ('days', 'percent'):
+            cfg.proration_mode = mode
+
+    if 'proration_percent_default' in data:
+        try:
+            pct = float(data.get('proration_percent_default') or 100)
+        except (TypeError, ValueError):
+            pct = 100
+        if pct < 0:
+            pct = 0
+        if pct > 100:
+            pct = 100
+        cfg.proration_percent_default = pct
+
+    db.session.commit()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/fees/student/<int:student_id>', methods=['GET'])
+def api_fees_student(student_id: int):
+    student = Student.query.get(student_id)
+    if not student:
+        return jsonify({'error': 'Alumno no encontrado'}), 404
+    data = _serialize_student_fees(student_id)
+    data['student'] = {
+        'id': student.id,
+        'full_name': student.full_name,
+        'last_name': student.last_name,
+        'first_name': student.first_name,
+        'status': student.status,
+        'belt': student.belt,
+    }
+    return jsonify(data)
+
+
+@app.route('/api/fees/student/<int:student_id>/settings', methods=['PUT'])
+def api_fees_student_settings(student_id: int):
+    student = Student.query.get(student_id)
+    if not student:
+        return jsonify({'error': 'Alumno no encontrado'}), 404
+
+    settings = _get_student_fee_settings(student_id)
+    data = request.json or {}
+    dtype = data.get('discount_type')
+    if dtype is None or dtype == '':
+        settings.discount_type = None
+    else:
+        dtype_norm = str(dtype).strip().lower()
+        if dtype_norm in ('percent', 'amount'):
+            settings.discount_type = dtype_norm
+
+    if 'discount_value' in data:
+        try:
+            settings.discount_value = float(data.get('discount_value') or 0)
+        except Exception:
+            settings.discount_value = 0
+
+    db.session.commit()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/fees/student/<int:student_id>/charges/generate', methods=['POST'])
+def api_fees_generate_charge(student_id: int):
+    student = Student.query.get(student_id)
+    if not student:
+        return jsonify({'error': 'Alumno no encontrado'}), 404
+
+    cfg = _get_fee_config()
+    settings = _get_student_fee_settings(student_id)
+    body = request.json or {}
+
+    periods = _list_periods_from_range(body.get('period_start'), body.get('period_end'))
+    if not periods:
+        period_raw = body.get('period')
+        if not period_raw:
+            today = date.today()
+            period_raw = f'{today.year:04d}-{today.month:02d}'
+        period_info = _parse_period(period_raw)
+        if not period_info:
+            return jsonify({'error': 'Período inválido'}), 400
+        periods = [period_info]
+
+    for period_info in periods:
+        _create_fee_charge(student_id, cfg, settings, period_info, body)
+
+    db.session.commit()
+
+    return jsonify(_serialize_student_fees(student_id))
+
+
+@app.route('/api/fees/generate-month', methods=['POST'])
+def api_fees_generate_month_all():
+    cfg = _get_fee_config()
+    body = request.json or {}
+
+    periods = _list_periods_from_range(body.get('period_start'), body.get('period_end'))
+    if not periods:
+        period_raw = body.get('period')
+        if not period_raw:
+            today = date.today()
+            period_raw = f'{today.year:04d}-{today.month:02d}'
+        period_info = _parse_period(period_raw)
+        if not period_info:
+            return jsonify({'error': 'Período inválido'}), 400
+        periods = [period_info]
+
+    created = 0
+    students = Student.query.order_by(Student.id.asc()).all()
+    for s in students:
+        st_status = (s.status or 'activo').strip().lower()
+        if st_status == 'inactivo':
+            continue
+
+        settings = _get_student_fee_settings(s.id)
+        for period_info in periods:
+            if _create_fee_charge(s.id, cfg, settings, period_info, body):
+                created += 1
+
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return jsonify({'error': 'No se pudieron generar cuotas'}), 400
+
+    return jsonify({'created': created})
+
+
+@app.route('/api/fees/overview', methods=['GET'])
+def api_fees_overview():
+    _ensure_fees_tables()
+    today = date.today()
+
+    students = Student.query.order_by(
+        (Student.last_name.is_(None)).asc(),
+        Student.last_name.asc(),
+        Student.first_name.asc(),
+    ).all()
+
+    active_students = []
+    active_ids = []
+    for s in students:
+        st_status = (s.status or 'activo').strip().lower()
+        if st_status == 'inactivo':
+            continue
+        active_students.append(s)
+        active_ids.append(s.id)
+
+    charges = []
+    if active_ids:
+        charges = FeeCharge.query.filter(FeeCharge.student_id.in_(active_ids)).all()
+
+    charges_by_student = {}
+    charge_ids = []
+    for c in charges:
+        charges_by_student.setdefault(c.student_id, []).append(c)
+        charge_ids.append(c.id)
+
+    allocations = []
+    if charge_ids:
+        allocations = FeeAllocation.query.filter(FeeAllocation.charge_id.in_(charge_ids)).all()
+    paid_by_charge = {}
+    for a in allocations:
+        paid_by_charge[a.charge_id] = paid_by_charge.get(a.charge_id, 0.0) + float(a.amount)
+
+    last_payments_rows = []
+    if active_ids:
+        last_payments_rows = (
+            db.session.query(FeePayment.student_id, func.max(FeePayment.payment_date))
+            .filter(FeePayment.student_id.in_(active_ids))
+            .group_by(FeePayment.student_id)
+            .all()
+        )
+    last_payment_map = {sid: pdate for (sid, pdate) in last_payments_rows}
+
+    out = []
+    for s in active_students:
+        st_charges = charges_by_student.get(s.id, [])
+        overdue_total = 0.0
+        balance_total = 0.0
+        for c in st_charges:
+            total = float(c.final_amount or 0)
+            paid = paid_by_charge.get(c.id, 0.0)
+            balance = round(total - paid, 2)
+            if balance < 0:
+                balance = 0.0
+            balance_total += balance
+            if c.due_date and today > c.due_date and balance > 0:
+                overdue_total += balance
+
+        if not st_charges:
+            lp = last_payment_map.get(s.id)
+            if not lp:
+                status = 'sin_registro'
+            else:
+                try:
+                    last_dt = datetime.strptime(lp, '%Y-%m-%d').date()
+                    delta_days = (date.today() - last_dt).days
+                    status = 'al_dia' if delta_days <= 30 else 'vencida'
+                except Exception:
+                    status = 'sin_registro'
+        elif overdue_total > 0:
+            status = 'vencida'
+        elif balance_total > 0:
+            status = 'pendiente'
+        else:
+            status = 'al_dia'
+
+        out.append({
+            'student_id': s.id,
+            'full_name': s.full_name,
+            'last_name': s.last_name,
+            'first_name': s.first_name,
+            'belt': s.belt,
+            'status': status,
+            'overdue_total': round(overdue_total, 2),
+            'balance_total': round(balance_total, 2),
+            'last_payment': last_payment_map.get(s.id),
+        })
+
+    return jsonify(out)
+
+
+@app.route('/api/fees/student/<int:student_id>/payments', methods=['POST'])
+def api_fees_register_payment(student_id: int):
+    student = Student.query.get(student_id)
+    if not student:
+        return jsonify({'error': 'Alumno no encontrado'}), 404
+
+    body = request.json or {}
+    payment_date = body.get('payment_date') or datetime.now().strftime('%Y-%m-%d')
+    amount_raw = body.get('amount', 0)
+    try:
+        amount = float(amount_raw or 0)
+    except Exception:
+        amount = 0
+    if amount < 0:
+        amount = 0
+
+    method = body.get('method') or 'cash'
+    if method not in ('cash', 'transfer'):
+        method = 'cash'
+    reference = body.get('reference')
+    notes = body.get('notes')
+
+    payment = FeePayment(
+        student_id=student_id,
+        payment_date=payment_date,
+        amount=round(amount, 2),
+        method=method,
+        reference=reference,
+        notes=notes,
+    )
+    db.session.add(payment)
+    db.session.flush()
+
+    charge_ids = body.get('apply_to_charge_ids')
+    charges_q = FeeCharge.query.filter_by(student_id=student_id)
+    if isinstance(charge_ids, list) and charge_ids:
+        normalized = []
+        for raw in charge_ids:
+            try:
+                normalized.append(int(raw))
+            except Exception:
+                continue
+        if normalized:
+            charges_q = charges_q.filter(FeeCharge.id.in_(normalized))
+    charges = charges_q.order_by(FeeCharge.due_date.asc()).all()
+
+    allocated_map = _get_charge_allocated_amounts([c.id for c in charges])
+    remaining_payment = round(amount, 2)
+
+    for c in charges:
+        if remaining_payment <= 0:
+            break
+        total = float(c.final_amount or 0)
+        already = allocated_map.get(c.id, 0.0)
+        remaining_charge = round(total - already, 2)
+        if remaining_charge <= 0:
+            continue
+
+        applied = remaining_charge if remaining_charge < remaining_payment else remaining_payment
+        if applied <= 0:
+            continue
+
+        db.session.add(FeeAllocation(payment_id=payment.id, charge_id=c.id, amount=round(applied, 2)))
+        remaining_payment = round(remaining_payment - applied, 2)
+
+    db.session.commit()
+    return jsonify(_serialize_student_fees(student_id))
 
 
 @app.route('/api/fees/<int:student_id>', methods=['GET', 'POST'])
 def api_fees(student_id: int):
     if request.method == 'GET':
-        data = _compute_fees_status(student_id)
-        return jsonify(data)
+        return jsonify(_serialize_student_fees(student_id))
 
-    # POST: registrar pago (un registro por envío)
-    data = request.json or {}
-    payment_date = data.get('payment_date') or datetime.now().strftime('%Y-%m-%d')
-    amount = data.get('amount', 0)
-
-    payment = FeePayment(
-        student_id=student_id,
-        payment_date=payment_date,
-        amount=amount,
-    )
-    db.session.add(payment)
-    db.session.commit()
-
-    # Devolver el estado actualizado reutilizando la misma lógica del GET
-    updated = _compute_fees_status(student_id)
-    return jsonify(updated)
+    payload = request.json or {}
+    payload['apply_to_charge_ids'] = payload.get('apply_to_charge_ids') or []
+    return api_fees_register_payment(student_id)
 
 
 @app.route('/api/fees/payment/<int:payment_id>', methods=['DELETE'])
 def api_fee_payment_delete(payment_id: int):
-    """Eliminar un pago individual de cuotas (idempotente)."""
     payment = FeePayment.query.get(payment_id)
     if payment:
+        FeeAllocation.query.filter_by(payment_id=payment.id).delete()
         db.session.delete(payment)
         db.session.commit()
-
-    # Aunque no exista, devolvemos 204 para que el frontend quede consistente
     return '', 204
 
 
 @app.route('/admin/clear-fees', methods=['GET'])
 def admin_clear_fees():
-    """Borrar TODOS los pagos de cuotas (uso administrativo, solo local)."""
+    FeeAllocation.query.delete()
+    FeeCharge.query.delete()
     deleted = FeePayment.query.delete()
     db.session.commit()
-    return jsonify({'deleted': deleted}), 200
+    return jsonify({'deleted_payments': deleted}), 200
 
 
 # --- PDF generation for exam inscription ---
 @app.route('/api/exams/<int:event_id>/inscription-pdf', methods=['POST'])
-def generate_exam_pdf(event_id: int):
+def generate_exam_fields_debug():
     """Genera un PDF de inscripción para un examen almacenado en la BD."""
     # Buscar el evento en la base de datos
     event = Event.query.get(event_id)
@@ -1134,9 +1837,24 @@ def exam_template_fields():
 
     return jsonify(simple)
 
-if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
 
+def _startup_init_db():
+    try:
+        with app.app_context():
+            db.create_all()
+    except Exception:
+        pass
+
+
+_startup_init_db()
+
+if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    dbg = os.environ.get('FLASK_DEBUG') or os.environ.get('DEBUG')
+    debug = False
+    if dbg is not None and str(dbg).strip() != '':
+        debug = str(dbg).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+    else:
+        debug = os.environ.get('DATABASE_URL') is None
+
+    app.run(host='0.0.0.0', port=port, debug=debug)

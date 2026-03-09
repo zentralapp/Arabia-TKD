@@ -1583,15 +1583,465 @@ btnGenerateEvalPdf?.addEventListener('click', () => {
 
 // --- Cuotas ---
 
-const feesForm = document.getElementById('fees-form');
-const feesStatusBody = document.getElementById('fees-status-body');
-const btnLoadFees = document.getElementById('btn-load-fees');
-const feesStudentNameInput = document.getElementById('fees-student-name');
-const feesStudentIdInput = document.getElementById('fees-student-id');
-const feesStudentSuggestions = document.getElementById('fees-student-suggestions');
-const feesDateDisplay = document.getElementById('fees-date-display');
-const feesDatePopover = document.getElementById('fees-date-popover');
-const feesDateCalendarEl = document.getElementById('fees-date-calendar');
+const btnFeesRefresh = document.getElementById('btn-fees-refresh');
+const feesSearchInput = document.getElementById('fees-search');
+const feesOverviewTbody = document.getElementById('fees-overview-tbody');
+const feesOverviewEmpty = document.getElementById('fees-overview-empty');
+const btnFeesGenerateMonth = document.getElementById('btn-fees-generate-month');
+
+const feesBulkPeriod = document.getElementById('fees-bulk-period');
+const feesBulkProrationMode = document.getElementById('fees-bulk-proration-mode');
+const feesBulkProrationPercent = document.getElementById('fees-bulk-proration-percent');
+const feesBulkStartDate = document.getElementById('fees-bulk-start-date');
+
+const feesConfigMonthly = document.getElementById('fees-config-monthly');
+const feesConfigDueDay = document.getElementById('fees-config-due-day');
+const feesConfigProrationMode = document.getElementById('fees-config-proration-mode');
+const feesConfigProrationPercent = document.getElementById('fees-config-proration-percent');
+const btnSaveFeesConfig = document.getElementById('btn-save-fees-config');
+
+const feesStudentEmpty = document.getElementById('fees-student-empty');
+const feesStudentContent = document.getElementById('fees-student-content');
+const feesStudentNameEl = document.getElementById('fees-student-name');
+const feesStudentMetaEl = document.getElementById('fees-student-meta');
+const feesStudentStatusEl = document.getElementById('fees-student-status');
+
+const feesChargesTbody = document.getElementById('fees-charges-tbody');
+const feesChargesEmpty = document.getElementById('fees-charges-empty');
+const feesPaymentsTbody = document.getElementById('fees-payments-tbody');
+const feesPaymentsEmpty = document.getElementById('fees-payments-empty');
+const feesApplyList = document.getElementById('fees-apply-list');
+
+const feesChargePeriod = document.getElementById('fees-charge-period');
+const feesChargeProrationMode = document.getElementById('fees-charge-proration-mode');
+const feesChargeProrationPercent = document.getElementById('fees-charge-proration-percent');
+const feesChargeStartDate = document.getElementById('fees-charge-start-date');
+const btnFeesGenerateStudent = document.getElementById('btn-fees-generate-student');
+
+const feesPaymentForm = document.getElementById('fees-payment-form');
+const feesPaymentDate = document.getElementById('fees-payment-date');
+const feesPaymentAmount = document.getElementById('fees-payment-amount');
+const feesPaymentMethod = document.getElementById('fees-payment-method');
+const feesPaymentReference = document.getElementById('fees-payment-reference');
+const feesPaymentNotes = document.getElementById('fees-payment-notes');
+
+const feesDiscountForm = document.getElementById('fees-discount-form');
+const feesDiscountType = document.getElementById('fees-discount-type');
+const feesDiscountValue = document.getElementById('fees-discount-value');
+
+let feesOverviewCache = [];
+let feesSelectedStudentId = null;
+let feesSelectedStudentData = null;
+
+function feesTodayDate() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function feesMonthStartDate(baseDate = new Date()) {
+  return `${baseDate.getFullYear()}-${String(baseDate.getMonth() + 1).padStart(2, '0')}-01`;
+}
+
+function feesMonthEndDate(baseDate = new Date()) {
+  const y = baseDate.getFullYear();
+  const m = baseDate.getMonth();
+  const end = new Date(y, m + 1, 0);
+  return `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
+}
+
+function parseDateRangeValue(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { start: '', end: '' };
+  const parts = raw.split(' to ');
+  const start = parts[0] || '';
+  const end = parts[1] || parts[0] || '';
+  return { start, end };
+}
+
+function getPeriodRangePayload(inputEl) {
+  const { start, end } = parseDateRangeValue(inputEl?.value || '');
+  if (!start || !end) return {};
+  return {
+    period_start: start,
+    period_end: end,
+  };
+}
+
+function formatFeesDate(value) {
+  if (!value) return '-';
+  return formatDateForDisplay(value);
+}
+
+function normalizePeriodLabel(period, dueDate) {
+  if (dueDate) {
+    const parts = String(dueDate).split('-');
+    if (parts.length === 3) {
+      const year = parts[0];
+      const month = parts[1];
+      return `${month}/${year}`;
+    }
+  }
+  if (!period) return '-';
+  const parts = String(period).split('-');
+  if (parts.length === 2) return `${parts[1]}/${parts[0]}`;
+  return period;
+}
+
+function feesSetDefaultPeriods() {
+  const d = new Date();
+  const start = feesMonthStartDate(d);
+  const end = feesMonthEndDate(d);
+  if (feesBulkPeriod && !feesBulkPeriod.value) feesBulkPeriod.value = `${start} to ${end}`;
+  if (feesChargePeriod && !feesChargePeriod.value) feesChargePeriod.value = `${start} to ${end}`;
+}
+
+function makeStatusPill(label, variant) {
+  const pill = document.createElement('span');
+  pill.className = 'status-pill';
+  if (variant === 'ok') pill.classList.add('status-pill-ok');
+  if (variant === 'debt') pill.classList.add('status-pill-debt');
+  if (variant === 'warn') pill.classList.add('status-pill-warn');
+  pill.textContent = label;
+  return pill;
+}
+
+function feesStatusToPill(status) {
+  if (status === 'al_dia') return makeStatusPill('Al día', 'ok');
+  if (status === 'vencida') return makeStatusPill('Vencida', 'debt');
+  if (status === 'pendiente') return makeStatusPill('Pendiente', 'warn');
+  return makeStatusPill('Sin registro', 'debt');
+}
+
+function feesChargeStatusToPill(charge) {
+  if (!charge) return makeStatusPill('-', 'warn');
+  if (charge.status === 'paid') return makeStatusPill('Pagada', 'ok');
+  if (charge.status === 'partial') return makeStatusPill('Parcial', 'warn');
+  if (charge.overdue) return makeStatusPill('Vencida', 'debt');
+  return makeStatusPill('Pendiente', 'warn');
+}
+
+async function loadFeesConfig() {
+  try {
+    const cfg = await apiGet('/api/fees/config');
+    if (feesConfigMonthly) feesConfigMonthly.value = String(cfg.monthly_amount ?? 0);
+    if (feesConfigDueDay) feesConfigDueDay.value = String(cfg.due_day ?? 10);
+    if (feesConfigProrationMode) feesConfigProrationMode.value = cfg.proration_mode ?? 'days';
+    if (feesConfigProrationPercent) feesConfigProrationPercent.value = String(cfg.proration_percent_default ?? 100);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+btnSaveFeesConfig?.addEventListener('click', async () => {
+  const payload = {
+    monthly_amount: Number(feesConfigMonthly?.value || 0),
+    due_day: Number(feesConfigDueDay?.value || 10),
+    proration_mode: feesConfigProrationMode?.value || 'days',
+    proration_percent_default: Number(feesConfigProrationPercent?.value || 100),
+  };
+
+  try {
+    await apiSend('/api/fees/config', 'PUT', payload);
+    alert('Configuración guardada.');
+  } catch (err) {
+    console.error(err);
+    alert(err?.message || 'No se pudo guardar la configuración.');
+  }
+});
+
+function renderFeesOverview() {
+  if (!feesOverviewTbody) return;
+  const query = (feesSearchInput?.value || '').toLowerCase().trim();
+  const list = (feesOverviewCache || []).filter((row) => {
+    if (!query) return true;
+    const name = (row.full_name || `${row.last_name || ''} ${row.first_name || ''}`).toLowerCase();
+    return name.includes(query);
+  });
+
+  feesOverviewTbody.innerHTML = '';
+  if (feesOverviewEmpty) {
+    feesOverviewEmpty.style.display = list.length === 0 ? 'block' : 'none';
+  }
+
+  list.forEach((row) => {
+    const tr = document.createElement('tr');
+    tr.className = 'fees-overview-row';
+    if (feesSelectedStudentId != null && Number(row.student_id) === Number(feesSelectedStudentId)) {
+      tr.classList.add('fees-overview-row-selected');
+    }
+
+    const name = row.full_name || `${row.last_name || ''} ${row.first_name || ''}`;
+    const statusCell = document.createElement('td');
+    statusCell.appendChild(feesStatusToPill(row.status));
+
+    tr.innerHTML = `
+      <td>${name}</td>
+      <td></td>
+      <td>$${Number(row.overdue_total || 0).toFixed(2)}</td>
+      <td>${formatFeesDate(row.last_payment)}</td>
+    `;
+    tr.children[1].appendChild(statusCell.firstChild);
+
+    tr.addEventListener('click', () => {
+      selectFeesStudent(row.student_id);
+    });
+
+    feesOverviewTbody.appendChild(tr);
+  });
+}
+
+async function loadFeesOverview() {
+  try {
+    const data = await apiGet('/api/fees/overview');
+    feesOverviewCache = Array.isArray(data) ? data : [];
+    renderFeesOverview();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function selectFeesStudent(studentId) {
+  feesSelectedStudentId = Number(studentId);
+  renderFeesOverview();
+  await loadFeesStudentDetail();
+}
+
+function renderFeesStudentDetail(data) {
+  feesSelectedStudentData = data;
+  if (!feesStudentEmpty || !feesStudentContent) return;
+
+  feesStudentEmpty.classList.add('hidden');
+  feesStudentContent.classList.remove('hidden');
+
+  const student = data.student || {};
+  if (feesStudentNameEl) {
+    feesStudentNameEl.textContent = student.full_name || `${student.last_name || ''} ${student.first_name || ''}`;
+  }
+  if (feesStudentMetaEl) {
+    const belt = student.belt ? `Cinturón: ${student.belt}` : '';
+    const st = student.status ? `Estado: ${student.status}` : '';
+    feesStudentMetaEl.textContent = [belt, st].filter(Boolean).join(' · ');
+  }
+  if (feesStudentStatusEl) {
+    feesStudentStatusEl.innerHTML = '';
+    const pill = feesStatusToPill(data.status);
+    feesStudentStatusEl.appendChild(pill);
+    if (Number(data.overdue_total || 0) > 0) {
+      const debt = document.createElement('div');
+      debt.className = 'text-muted';
+      debt.textContent = `Deuda vencida: $${Number(data.overdue_total || 0).toFixed(2)}`;
+      feesStudentStatusEl.appendChild(debt);
+    }
+  }
+
+  if (feesDiscountType) feesDiscountType.value = data.settings?.discount_type || '';
+  if (feesDiscountValue) feesDiscountValue.value = String(data.settings?.discount_value ?? 0);
+
+  feesSetDefaultPeriods();
+  if (feesPaymentDate && !feesPaymentDate.value) feesPaymentDate.value = feesTodayDate();
+
+  const charges = Array.isArray(data.charges) ? data.charges : [];
+  if (feesChargesTbody) feesChargesTbody.innerHTML = '';
+  if (feesChargesEmpty) feesChargesEmpty.style.display = charges.length === 0 ? 'block' : 'none';
+  charges.forEach((c) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${normalizePeriodLabel(c.period, c.due_date)}</td>
+      <td>${formatFeesDate(c.due_date)}</td>
+      <td>$${Number(c.final_amount || 0).toFixed(2)}</td>
+      <td>$${Number(c.paid_amount || 0).toFixed(2)}</td>
+      <td>$${Number(c.balance || 0).toFixed(2)}</td>
+      <td></td>
+    `;
+    tr.children[5].appendChild(feesChargeStatusToPill(c));
+    feesChargesTbody?.appendChild(tr);
+  });
+
+  if (feesApplyList) {
+    feesApplyList.innerHTML = '';
+    const payable = charges.filter((c) => Number(c.balance || 0) > 0);
+    if (payable.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'text-muted';
+      empty.textContent = 'No hay cuotas con saldo.';
+      feesApplyList.appendChild(empty);
+    } else {
+      payable
+        .sort((a, b) => String(a.due_date || '').localeCompare(String(b.due_date || '')))
+        .forEach((c) => {
+          const row = document.createElement('label');
+          row.className = 'fees-apply-item';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = true;
+          cb.dataset.chargeId = String(c.id);
+          const text = document.createElement('span');
+          text.textContent = `${normalizePeriodLabel(c.period, c.due_date)} · Saldo $${Number(c.balance || 0).toFixed(2)}`;
+          row.appendChild(cb);
+          row.appendChild(text);
+          feesApplyList.appendChild(row);
+        });
+    }
+  }
+
+  const payments = Array.isArray(data.payments) ? data.payments : [];
+  if (feesPaymentsTbody) feesPaymentsTbody.innerHTML = '';
+  if (feesPaymentsEmpty) feesPaymentsEmpty.style.display = payments.length === 0 ? 'block' : 'none';
+  payments.forEach((p) => {
+    const tr = document.createElement('tr');
+    const methodLabel = p.method === 'transfer' ? 'Transferencia' : (p.method === 'cash' ? 'Efectivo' : '-');
+    tr.innerHTML = `
+      <td>${formatFeesDate(p.payment_date)}</td>
+      <td>$${Number(p.amount || 0).toFixed(2)}</td>
+      <td>${methodLabel}</td>
+      <td>${p.reference || '-'}</td>
+      <td></td>
+    `;
+    const actionsTd = tr.children[4];
+    if (p.id != null) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'btn-secondary';
+      del.textContent = 'Eliminar';
+      del.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        try {
+          await apiSend(`/api/fees/payment/${p.id}`, 'DELETE');
+          await loadFeesStudentDetail();
+          await loadFeesOverview();
+        } catch (err) {
+          console.error(err);
+        }
+      });
+      actionsTd.appendChild(del);
+    }
+    feesPaymentsTbody?.appendChild(tr);
+  });
+}
+
+async function loadFeesStudentDetail() {
+  if (feesSelectedStudentId == null) return;
+  try {
+    const data = await apiGet(`/api/fees/student/${feesSelectedStudentId}`);
+    renderFeesStudentDetail(data);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+btnFeesGenerateStudent?.addEventListener('click', async () => {
+  if (feesSelectedStudentId == null) return;
+  const payload = {
+    proration_mode: feesChargeProrationMode?.value || undefined,
+    proration_percent: feesChargeProrationPercent?.value || undefined,
+    start_date: feesChargeStartDate?.value || undefined,
+    ...getPeriodRangePayload(feesChargePeriod),
+  };
+  try {
+    await apiSend(`/api/fees/student/${feesSelectedStudentId}/charges/generate`, 'POST', payload);
+    await loadFeesStudentDetail();
+    await loadFeesOverview();
+  } catch (err) {
+    console.error(err);
+    alert(err?.message || 'No se pudo generar la cuota.');
+  }
+});
+
+btnFeesGenerateMonth?.addEventListener('click', async () => {
+  const payload = {
+    proration_mode: feesBulkProrationMode?.value || undefined,
+    proration_percent: feesBulkProrationPercent?.value || undefined,
+    start_date: feesBulkStartDate?.value || undefined,
+    ...getPeriodRangePayload(feesBulkPeriod),
+  };
+  try {
+    const res = await apiSend('/api/fees/generate-month', 'POST', payload);
+    alert(`Cuotas generadas: ${res?.created ?? 0}`);
+    await loadFeesOverview();
+    await loadFeesStudentDetail();
+  } catch (err) {
+    console.error(err);
+    alert(err?.message || 'No se pudieron generar cuotas.');
+  }
+});
+
+feesPaymentForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (feesSelectedStudentId == null) return;
+
+  const chargeIds = [];
+  feesApplyList?.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    if (cb.checked && cb.dataset.chargeId) {
+      chargeIds.push(Number(cb.dataset.chargeId));
+    }
+  });
+
+  const payload = {
+    payment_date: feesPaymentDate?.value || undefined,
+    amount: Number(feesPaymentAmount?.value || 0),
+    method: feesPaymentMethod?.value || 'cash',
+    reference: feesPaymentReference?.value || undefined,
+    notes: feesPaymentNotes?.value || undefined,
+    apply_to_charge_ids: chargeIds,
+  };
+
+  const submitBtn = feesPaymentForm.querySelector('button[type="submit"]');
+  try {
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Registrando...';
+    }
+    await apiSend(`/api/fees/student/${feesSelectedStudentId}/payments`, 'POST', payload);
+    if (feesPaymentAmount) feesPaymentAmount.value = '';
+    if (feesPaymentReference) feesPaymentReference.value = '';
+    if (feesPaymentNotes) feesPaymentNotes.value = '';
+    await loadFeesStudentDetail();
+    await loadFeesOverview();
+  } catch (err) {
+    console.error(err);
+    alert(err?.message || 'No se pudo registrar el pago.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Registrar pago';
+    }
+  }
+});
+
+feesDiscountForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (feesSelectedStudentId == null) return;
+  const payload = {
+    discount_type: feesDiscountType?.value || '',
+    discount_value: Number(feesDiscountValue?.value || 0),
+  };
+  try {
+    await apiSend(`/api/fees/student/${feesSelectedStudentId}/settings`, 'PUT', payload);
+    await loadFeesStudentDetail();
+    await loadFeesOverview();
+    alert('Descuento guardado.');
+  } catch (err) {
+    console.error(err);
+    alert(err?.message || 'No se pudo guardar el descuento.');
+  }
+});
+
+feesSearchInput?.addEventListener('input', () => {
+  renderFeesOverview();
+});
+
+btnFeesRefresh?.addEventListener('click', async () => {
+  await loadFeesConfig();
+  await loadFeesOverview();
+  await loadFeesStudentDetail();
+});
+
+function feesInitDefaults() {
+  feesSetDefaultPeriods();
+  if (feesPaymentDate && !feesPaymentDate.value) feesPaymentDate.value = feesTodayDate();
+}
+
+feesInitDefaults();
 
 const examStudentNameInput = document.getElementById('exam-student-name');
 
@@ -1599,20 +2049,15 @@ function setupStudentNameAutocomplete(inputEl, hiddenEl, suggestionsEl, onSelect
   if (!inputEl || !hiddenEl || !suggestionsEl) return;
 
   inputEl.addEventListener('input', () => {
-    // Cada vez que cambia el texto, asumimos que todavía no hay alumno seleccionado
-    // y limpiamos el ID oculto para evitar reutilizar el del alumno anterior.
     hiddenEl.value = '';
-
-    // Si estamos mostrando algún estado asociado (por ejemplo, cuotas), lo limpiamos
-    if (feesStatusBody && (inputEl === feesStudentNameInput)) {
-      feesStatusBody.innerHTML = '';
-    }
 
     const query = inputEl.value.toLowerCase().trim();
     suggestionsEl.innerHTML = '';
     if (!query || !studentsCache.length) return;
 
-    const matches = studentsCache.filter((s) => (s.full_name || '').toLowerCase().includes(query)).slice(0, 8);
+    const matches = studentsCache
+      .filter((s) => (s.full_name || '').toLowerCase().includes(query))
+      .slice(0, 8);
     matches.forEach((s) => {
       const div = document.createElement('div');
       div.className = 'student-suggestion-item';
@@ -1638,165 +2083,11 @@ function setupStudentNameAutocomplete(inputEl, hiddenEl, suggestionsEl, onSelect
   });
 }
 
-async function loadFeesForStudent(studentId) {
-  try {
-    const data = await apiGet(`/api/fees/${studentId}`);
-    if (!feesStatusBody) return;
-
-    const statusText = document.createElement('div');
-    const pill = document.createElement('span');
-    pill.className = 'status-pill';
-    if (data.status === 'al_dia') {
-      pill.classList.add('status-pill-ok');
-      pill.textContent = 'Al día';
-    } else if (data.status === 'sin_registro') {
-      pill.classList.add('status-pill-debt');
-      pill.textContent = 'Sin registro';
-    } else {
-      pill.classList.add('status-pill-debt');
-      pill.textContent = 'Adeuda';
-    }
-
-    statusText.append('Estado: ', pill);
-
-    const last = document.createElement('div');
-    last.className = 'text-muted';
-    last.textContent = `Último pago: ${data.last_payment || '-'} `;
-
-    const historyTitle = document.createElement('div');
-    historyTitle.textContent = 'Historial de pagos:';
-
-    const historyList = document.createElement('ul');
-    historyList.className = 'fees-history-list';
-    (data.history || []).forEach((h) => {
-      const li = document.createElement('li');
-      const text = document.createElement('span');
-      text.textContent = `${h.date} - $${h.amount}`;
-
-      if (h.id != null) {
-        const delBtn = document.createElement('button');
-        delBtn.type = 'button';
-        delBtn.textContent = 'Eliminar';
-        delBtn.style.marginLeft = '8px';
-        delBtn.className = 'btn-secondary';
-        delBtn.addEventListener('click', async () => {
-          try {
-            await apiSend(`/api/fees/payment/${h.id}`, 'DELETE');
-            loadFeesForStudent(studentId);
-          } catch (err) {
-            console.error(err);
-          }
-        });
-        li.appendChild(text);
-        li.appendChild(delBtn);
-      } else {
-        li.appendChild(text);
-      }
-      historyList.appendChild(li);
-    });
-
-    feesStatusBody.innerHTML = '';
-    feesStatusBody.appendChild(statusText);
-    feesStatusBody.appendChild(last);
-    feesStatusBody.appendChild(historyTitle);
-    feesStatusBody.appendChild(historyList);
-  } catch (err) {
-    console.error(err);
-  }
-}
-
-btnLoadFees?.addEventListener('click', () => {
-  const id = feesStudentIdInput?.value;
-  if (!id) return;
-  loadFeesForStudent(Number(id));
-});
-
-let feesSubmitting = false;
-
-feesForm?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  if (feesSubmitting) return; // evitar múltiples envíos rápidos
-  const id = feesStudentIdInput?.value;
-  if (!id) return;
-
-  const payload = {
-    payment_date: document.getElementById('fees-payment-date').value || undefined,
-    amount: Number(document.getElementById('fees-amount').value || 0),
-  };
-
-  const submitBtn = feesForm.querySelector('button[type="submit"]');
-
-  try {
-    feesSubmitting = true;
-    if (submitBtn) {
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Registrando...';
-    }
-    await apiSend(`/api/fees/${id}`, 'POST', payload);
-    loadFeesForStudent(Number(id));
-  } catch (err) {
-    console.error(err);
-  } finally {
-    feesSubmitting = false;
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Registrar pago';
-    }
-  }
-});
-
-// Calendario de Fecha de pago (Cuotas)
-
-feesDateDisplay?.addEventListener('click', () => {
-  if (!feesDatePopover || !feesDateCalendarEl) return;
-  const hidden = document.getElementById('fees-payment-date');
-  const currentValue = hidden.value;
-  if (currentValue) {
-    feesSelectedDate = currentValue;
-    const d = new Date(currentValue);
-    if (!Number.isNaN(d.getTime())) {
-      feesCalendarYearMonth = { year: d.getFullYear(), month: d.getMonth() };
-    }
-  }
-
-  // Usamos el calendario genérico
-  renderGenericCalendar(
-    feesDateCalendarEl,
-    { get value() { return feesSelectedDate; }, set value(v) { feesSelectedDate = v; } },
-    { get value() { return feesCalendarYearMonth; }, set value(v) { feesCalendarYearMonth = v; } },
-    (dateStr) => {
-      hidden.value = dateStr;
-      feesDateDisplay.textContent = formatDateForDisplay(dateStr);
-    },
-  );
-
-  feesDatePopover.classList.remove('hidden');
-});
-
-feesDatePopover?.addEventListener('click', (e) => {
-  const target = e.target;
-  if (target.dataset?.picker === 'fees-date-cancel') {
-    feesDatePopover.classList.add('hidden');
-  } else if (target.dataset?.picker === 'fees-date-apply') {
-    feesDatePopover.classList.add('hidden');
-  }
-});
-
 // Carga inicial
 loadStudents();
 loadEvents();
-
-// Inicializar autocompletados una vez que haya alumnos
-setupStudentNameAutocomplete(
-  feesStudentNameInput,
-  feesStudentIdInput,
-  feesStudentSuggestions,
-  (student) => {
-    if (student && student.id != null) {
-      loadFeesForStudent(student.id);
-    }
-  },
-);
+loadFeesConfig();
+loadFeesOverview();
 
 setupStudentNameAutocomplete(
   examStudentNameInput,
@@ -1831,6 +2122,48 @@ setupStudentNameAutocomplete(
   flatpickr('#fees-payment-date', {
     dateFormat: 'Y-m-d',
     defaultDate: document.getElementById('fees-payment-date')?.value || undefined,
+    altInput: true,
+    altFormat: 'd/m/Y',
+    locale: 'es',
+    disableMobile: true,
+  });
+
+  flatpickr('#fees-bulk-start-date', {
+    dateFormat: 'Y-m-d',
+    defaultDate: document.getElementById('fees-bulk-start-date')?.value || undefined,
+    altInput: true,
+    altFormat: 'd/m/Y',
+    locale: 'es',
+    disableMobile: true,
+  });
+
+  flatpickr('#fees-charge-start-date', {
+    dateFormat: 'Y-m-d',
+    defaultDate: document.getElementById('fees-charge-start-date')?.value || undefined,
+    altInput: true,
+    altFormat: 'd/m/Y',
+    locale: 'es',
+    disableMobile: true,
+  });
+
+  flatpickr('#fees-bulk-period', {
+    mode: 'range',
+    dateFormat: 'Y-m-d',
+    defaultDate: document.getElementById('fees-bulk-period')?.value
+      ? document.getElementById('fees-bulk-period').value.split(' to ')
+      : undefined,
+    altInput: true,
+    altFormat: 'd/m/Y',
+    locale: 'es',
+    disableMobile: true,
+  });
+
+  flatpickr('#fees-charge-period', {
+    mode: 'range',
+    dateFormat: 'Y-m-d',
+    defaultDate: document.getElementById('fees-charge-period')?.value
+      ? document.getElementById('fees-charge-period').value.split(' to ')
+      : undefined,
     altInput: true,
     altFormat: 'd/m/Y',
     locale: 'es',
