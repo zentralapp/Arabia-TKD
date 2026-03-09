@@ -596,9 +596,6 @@ def _list_periods_from_range(start_raw, end_raw):
 
 def _create_fee_charge(student_id: int, cfg: FeeConfig, settings: StudentFeeSettings, period_info, body):
     existing = FeeCharge.query.filter_by(student_id=student_id, period=period_info['period']).first()
-    if existing:
-        return False
-
     base_amount = float(cfg.monthly_amount or 0)
     if base_amount <= 0:
         return False
@@ -621,6 +618,21 @@ def _create_fee_charge(student_id: int, cfg: FeeConfig, settings: StudentFeeSett
     if due_day > dim:
         due_day = dim
     due_date = date(year, month, due_day)
+
+    if existing:
+        has_allocations = FeeAllocation.query.filter_by(charge_id=existing.id).count() > 0
+        existing_final_amount = float(existing.final_amount or 0)
+        if has_allocations or existing_final_amount > 0:
+            return False
+
+        existing.due_date = due_date
+        existing.base_amount = round(base_amount, 2)
+        existing.discount_amount = round(discount_amount, 2)
+        existing.proration_mode = proration['mode']
+        existing.proration_percent = proration['percent']
+        existing.proration_start_date = proration['start_date']
+        existing.final_amount = final_amount
+        return True
 
     charge = FeeCharge(
         student_id=student_id,
