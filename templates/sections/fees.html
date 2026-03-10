@@ -43,22 +43,13 @@
               <span>Período general</span>
               <input id="fees-bulk-period" type="text" placeholder="Seleccionar período" />
             </label>
-          </div>
-          <div class="form-actions">
-            <button id="btn-fees-generate-month" type="button" class="btn-martial">Generar cuotas para activos</button>
-          </div>
-        </div>
-
-        <h4 class="subheading">Configuración</h4>
-        <div class="fees-config-box">
-          <div class="form-grid">
             <label class="form-field">
               <span>Tarifa mensual (ARS)</span>
-              <input id="fees-config-monthly" type="number" min="0" step="0.01" placeholder="0" />
+              <input id="fees-config-monthly" type="text" inputmode="numeric" placeholder="0" />
             </label>
           </div>
           <div class="form-actions">
-            <button type="button" id="btn-save-fees-config" class="btn-secondary">Guardar config</button>
+            <button id="btn-fees-generate-month" type="button" class="btn-martial">Generar cuotas para activos</button>
           </div>
         </div>
 
@@ -73,6 +64,7 @@
             <div>
               <div id="fees-student-name" class="fees-student-name"></div>
               <div id="fees-student-meta" class="text-muted"></div>
+              <div id="fees-student-credit-banner" class="fees-credit-banner hidden"></div>
             </div>
             <div id="fees-student-status"></div>
           </div>
@@ -111,7 +103,7 @@
               </label>
               <label class="form-field">
                 <span>Monto</span>
-                <input id="fees-payment-amount" type="number" min="0" step="0.01" />
+                <input id="fees-payment-amount" type="text" inputmode="numeric" />
               </label>
               <label class="form-field form-field-full">
                 <span>Notas</span>
@@ -157,7 +149,7 @@
               </label>
               <label class="form-field">
                 <span>Valor final</span>
-                <input id="fees-fixed-fee-amount" type="number" min="0" step="0.01" />
+                <input id="fees-fixed-fee-amount" type="text" inputmode="numeric" />
               </label>
             </div>
             <div class="form-actions">

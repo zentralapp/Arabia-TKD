@@ -616,11 +616,6 @@ def _create_fee_charge(student_id: int, cfg: FeeConfig, settings: StudentFeeSett
     due_date = date(year, month, 1)
 
     if existing:
-        has_allocations = FeeAllocation.query.filter_by(charge_id=existing.id).count() > 0
-        existing_final_amount = float(existing.final_amount or 0)
-        if has_allocations or existing_final_amount > 0:
-            return False
-
         existing.due_date = due_date
         existing.base_amount = round(base_amount, 2)
         existing.discount_amount = round(discount_amount, 2)
@@ -674,6 +669,28 @@ def _compute_discount_amount(base_amount: float, settings: StudentFeeSettings):
     if discount > base_amount:
         discount = base_amount
     return round(discount, 2)
+
+
+def _refresh_student_fee_charges(student_id: int, cfg: FeeConfig, settings: StudentFeeSettings):
+    charges = FeeCharge.query.filter_by(student_id=student_id).all()
+    base_amount = float(cfg.monthly_amount or 0)
+    if base_amount <= 0:
+        return
+
+    discount_amount = _compute_discount_amount(base_amount, settings)
+    final_amount = round(max(base_amount - discount_amount, 0), 2)
+
+    for charge in charges:
+        period_info = _parse_period(charge.period)
+        if not period_info:
+            continue
+        charge.base_amount = round(base_amount, 2)
+        charge.discount_amount = round(discount_amount, 2)
+        charge.proration_mode = 'percent'
+        charge.proration_percent = 100
+        charge.proration_start_date = None
+        charge.due_date = date(period_info['year'], period_info['month'], 1)
+        charge.final_amount = final_amount
 
 
 def _compute_proration_percent(cfg: FeeConfig, period_info, proration_mode: str, start_date_raw: str, proration_percent_raw):
@@ -742,35 +759,111 @@ def _get_charge_allocated_amounts(charge_ids):
     return out
 
 
-def _serialize_student_fees(student_id: int):
-    _ensure_fees_tables()
-    cfg = _get_fee_config()
-    settings = _get_student_fee_settings(student_id)
+def _build_charge_financials(charges, allocated_map, student_credit=0.0, today_value=None):
+    today_value = today_value or date.today()
+    remaining_credit = round(float(student_credit or 0), 2)
+    charge_meta = {}
 
-    charges = FeeCharge.query.filter_by(student_id=student_id).order_by(FeeCharge.period.desc()).all()
-    charge_ids = [c.id for c in charges]
-    allocated_map = _get_charge_allocated_amounts(charge_ids)
-    today = date.today()
+    ordered = sorted(
+        charges,
+        key=lambda c: (
+            c.due_date or date.max,
+            c.period or '',
+            c.id or 0,
+        )
+    )
 
-    charges_out = []
-    overdue_total = 0.0
-    for c in charges:
-        paid = allocated_map.get(c.id, 0.0)
-        total = float(c.final_amount or 0)
-        balance = round(total - paid, 2)
-        if balance < 0:
-            balance = 0.0
+    for c in ordered:
+        paid = round(float(allocated_map.get(c.id, 0.0)), 2)
+        total = round(float(c.final_amount or 0), 2)
+        raw_balance = round(total - paid, 2)
+        applied_credit = 0.0
+        if raw_balance > 0 and remaining_credit > 0:
+            applied_credit = min(raw_balance, remaining_credit)
+            remaining_credit = round(remaining_credit - applied_credit, 2)
 
-        if balance == 0 and total > 0:
+        effective_balance = round(raw_balance - applied_credit, 2)
+        outstanding_balance = effective_balance if effective_balance > 0 else 0.0
+        credit_amount = abs(effective_balance) if effective_balance < 0 else 0.0
+
+        if outstanding_balance <= 0 and total > 0:
             status = 'paid'
         elif paid > 0:
             status = 'partial'
         else:
             status = 'pending'
 
-        is_overdue = (c.due_date is not None) and (today > c.due_date) and (status != 'paid')
-        if is_overdue:
-            overdue_total += balance
+        is_overdue = (c.due_date is not None) and (today_value > c.due_date) and (status != 'paid')
+        charge_meta[c.id] = {
+            'paid': paid,
+            'total': total,
+            'applied_credit': round(applied_credit, 2),
+            'balance': round(effective_balance, 2),
+            'outstanding_balance': round(outstanding_balance, 2),
+            'credit_amount': round(credit_amount, 2),
+            'status': status,
+            'overdue': is_overdue,
+        }
+
+    overdue_total = 0.0
+    credit_total = round(remaining_credit, 2)
+    has_partial = False
+    balance_total = 0.0
+    positive_charges_count = 0
+    for c in charges:
+        meta = charge_meta.get(c.id, {})
+        total = float(meta.get('total', 0.0))
+        if total > 0:
+            positive_charges_count += 1
+        balance_total += float(meta.get('balance', 0.0))
+        if meta.get('overdue') and float(meta.get('outstanding_balance', 0.0)) > 0:
+            overdue_total += float(meta.get('outstanding_balance', 0.0))
+        credit_total += float(meta.get('credit_amount', 0.0))
+        if meta.get('status') == 'partial' and float(meta.get('outstanding_balance', 0.0)) > 0:
+            has_partial = True
+
+    return {
+        'by_charge_id': charge_meta,
+        'overdue_total': round(overdue_total, 2),
+        'credit_total': round(credit_total, 2),
+        'has_partial': has_partial,
+        'balance_total': round(balance_total - remaining_credit, 2),
+        'positive_charges_count': positive_charges_count,
+        'remaining_credit': round(remaining_credit, 2),
+    }
+
+
+def _serialize_student_fees(student_id: int):
+    _ensure_fees_tables()
+    cfg = _get_fee_config()
+    settings = _get_student_fee_settings(student_id)
+    today = date.today()
+
+    charges = FeeCharge.query.filter_by(student_id=student_id).order_by(FeeCharge.period.desc()).all()
+    payments = FeePayment.query.filter_by(student_id=student_id).order_by(FeePayment.payment_date.desc(), FeePayment.id.desc()).all()
+    charge_ids = [c.id for c in charges]
+    allocated_map = _get_charge_allocated_amounts(charge_ids)
+    payment_ids = [p.id for p in payments]
+    allocations = []
+    if payment_ids:
+        allocations = FeeAllocation.query.filter(FeeAllocation.payment_id.in_(payment_ids)).all()
+    allocated_by_payment = {}
+    alloc_by_payment = {}
+    for a in allocations:
+        allocated_by_payment[a.payment_id] = allocated_by_payment.get(a.payment_id, 0.0) + float(a.amount)
+        alloc_by_payment.setdefault(a.payment_id, []).append({
+            'id': a.id,
+            'charge_id': a.charge_id,
+            'amount': float(a.amount),
+        })
+    student_credit = 0.0
+    for p in payments:
+        student_credit += round(float(p.amount or 0) - float(allocated_by_payment.get(p.id, 0.0)), 2)
+    financials = _build_charge_financials(charges, allocated_map, student_credit=student_credit, today_value=today)
+
+    charges_out = []
+    for c in charges:
+        meta = financials['by_charge_id'].get(c.id, {})
 
         charges_out.append({
             'id': c.id,
@@ -781,24 +874,14 @@ def _serialize_student_fees(student_id: int):
             'proration_mode': c.proration_mode,
             'proration_percent': float(c.proration_percent or 0),
             'proration_start_date': c.proration_start_date.isoformat() if c.proration_start_date else None,
-            'final_amount': total,
-            'paid_amount': round(paid, 2),
-            'balance': balance,
-            'status': status,
-            'overdue': is_overdue,
-        })
-
-    payments = FeePayment.query.filter_by(student_id=student_id).order_by(FeePayment.payment_date.desc(), FeePayment.id.desc()).all()
-    payment_ids = [p.id for p in payments]
-    allocations = []
-    if payment_ids:
-        allocations = FeeAllocation.query.filter(FeeAllocation.payment_id.in_(payment_ids)).all()
-    alloc_by_payment = {}
-    for a in allocations:
-        alloc_by_payment.setdefault(a.payment_id, []).append({
-            'id': a.id,
-            'charge_id': a.charge_id,
-            'amount': float(a.amount),
+            'final_amount': float(meta.get('total', 0.0)),
+            'paid_amount': round(float(meta.get('paid', 0.0)), 2),
+            'applied_credit': round(float(meta.get('applied_credit', 0.0)), 2),
+            'balance': round(float(meta.get('balance', 0.0)), 2),
+            'outstanding_balance': round(float(meta.get('outstanding_balance', 0.0)), 2),
+            'credit_amount': round(float(meta.get('credit_amount', 0.0)), 2),
+            'status': meta.get('status', 'pending'),
+            'overdue': bool(meta.get('overdue')),
         })
 
     payments_out = []
@@ -825,23 +908,15 @@ def _serialize_student_fees(student_id: int):
         for p in payments_out
     ]
 
-    balance_total = 0.0
-    positive_charges_count = 0
-    for c in charges_out:
-        try:
-            if float(c.get('final_amount') or 0) > 0:
-                positive_charges_count += 1
-            balance_total += float(c.get('balance') or 0)
-        except Exception:
-            continue
-
     last_payment = payments[0].payment_date if payments else None
 
-    if not charges_out or positive_charges_count == 0:
+    if not charges_out or financials['positive_charges_count'] == 0:
         status = 'sin_registro'
-    elif overdue_total > 0:
+    elif financials['overdue_total'] > 0:
         status = 'vencida'
-    elif balance_total > 0:
+    elif financials['has_partial']:
+        status = 'parcial'
+    elif financials['balance_total'] > 0:
         status = 'pendiente'
     else:
         status = 'al_dia'
@@ -849,8 +924,9 @@ def _serialize_student_fees(student_id: int):
     return {
         'student_id': student_id,
         'status': status,
-        'overdue_total': round(overdue_total, 2),
-        'balance_total': round(balance_total, 2),
+        'overdue_total': round(financials['overdue_total'], 2),
+        'balance_total': round(financials['balance_total'], 2),
+        'credit_total': round(financials['credit_total'], 2),
         'last_payment': last_payment,
         'config': {
             'monthly_amount': float(cfg.monthly_amount or 0),
@@ -926,6 +1002,7 @@ def api_fees_student_settings(student_id: int):
         return jsonify({'error': 'Alumno no encontrado'}), 404
 
     settings = _get_student_fee_settings(student_id)
+    cfg = _get_fee_config()
     data = request.json or {}
     fixed_fee_enabled = bool(data.get('fixed_fee_enabled'))
     if fixed_fee_enabled:
@@ -937,6 +1014,7 @@ def api_fees_student_settings(student_id: int):
         if fixed_amount < 0:
             fixed_amount = 0
         settings.discount_value = fixed_amount
+        _refresh_student_fee_charges(student_id, cfg, settings)
         db.session.commit()
         return jsonify({'status': 'ok'})
 
@@ -954,6 +1032,7 @@ def api_fees_student_settings(student_id: int):
         except Exception:
             settings.discount_value = 0
 
+    _refresh_student_fee_charges(student_id, cfg, settings)
     db.session.commit()
     return jsonify({'status': 'ok'})
 
@@ -1093,34 +1172,48 @@ def api_fees_overview():
         )
     last_payment_map = {sid: pdate for (sid, pdate) in last_payments_rows}
 
+    payments = []
+    if active_ids:
+        payments = FeePayment.query.filter(FeePayment.student_id.in_(active_ids)).all()
+    payment_ids = [p.id for p in payments]
+    payment_allocations = []
+    if payment_ids:
+        payment_allocations = FeeAllocation.query.filter(FeeAllocation.payment_id.in_(payment_ids)).all()
+    allocated_by_payment = {}
+    for a in payment_allocations:
+        allocated_by_payment[a.payment_id] = allocated_by_payment.get(a.payment_id, 0.0) + float(a.amount)
+    student_credit_map = {}
+    for p in payments:
+        student_credit_map[p.student_id] = student_credit_map.get(p.student_id, 0.0) + round(float(p.amount or 0) - float(allocated_by_payment.get(p.id, 0.0)), 2)
+
+    period_payment_total_map = {}
+    if period_filter:
+        selected_period = period_filter['period']
+        for p in payments:
+            payment_period = str(p.payment_date or '')[:7]
+            if payment_period != selected_period:
+                continue
+            period_payment_total_map[p.student_id] = period_payment_total_map.get(p.student_id, 0.0) + float(p.amount or 0)
+
     out = []
     for s in active_students:
         st_charges = charges_by_student.get(s.id, [])
-        overdue_total = 0.0
-        balance_total = 0.0
-        positive_charges_count = 0
-        has_partial = False
-        for c in st_charges:
-            total = float(c.final_amount or 0)
-            if total > 0:
-                positive_charges_count += 1
-            paid = paid_by_charge.get(c.id, 0.0)
-            balance = round(total - paid, 2)
-            if balance < 0:
-                balance = 0.0
-            if paid > 0 and balance > 0:
-                has_partial = True
-            balance_total += balance
-            if c.due_date and today > c.due_date and balance > 0:
-                overdue_total += balance
+        financials = _build_charge_financials(st_charges, paid_by_charge, student_credit=student_credit_map.get(s.id, 0.0), today_value=today)
+        period_charge_total = 0.0
+        if period_filter:
+            for c in st_charges:
+                period_charge_total += float(c.final_amount or 0)
+        period_generated_credit = 0.0
+        if period_filter:
+            period_generated_credit = round(max(period_payment_total_map.get(s.id, 0.0) - period_charge_total, 0.0), 2)
 
-        if not st_charges or positive_charges_count == 0:
+        if not st_charges or financials['positive_charges_count'] == 0:
             status = 'sin_registro'
-        elif overdue_total > 0:
+        elif financials['overdue_total'] > 0:
             status = 'vencida'
-        elif has_partial:
+        elif financials['has_partial']:
             status = 'parcial'
-        elif balance_total > 0:
+        elif financials['balance_total'] > 0:
             status = 'pendiente'
         else:
             status = 'al_dia'
@@ -1132,8 +1225,10 @@ def api_fees_overview():
             'first_name': s.first_name,
             'belt': s.belt,
             'status': status,
-            'overdue_total': round(overdue_total, 2),
-            'balance_total': round(balance_total, 2),
+            'overdue_total': round(financials['overdue_total'], 2),
+            'balance_total': round(financials['balance_total'], 2),
+            'credit_total': round(financials['credit_total'], 2),
+            'period_generated_credit': round(period_generated_credit, 2),
             'last_payment': last_payment_map.get(s.id),
         })
 

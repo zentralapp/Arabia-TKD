@@ -1715,6 +1715,7 @@ const feesStudentEmpty = document.getElementById('fees-student-empty');
 const feesStudentContent = document.getElementById('fees-student-content');
 const feesStudentNameEl = document.getElementById('fees-student-name');
 const feesStudentMetaEl = document.getElementById('fees-student-meta');
+const feesStudentCreditBanner = document.getElementById('fees-student-credit-banner');
 const feesStudentStatusEl = document.getElementById('fees-student-status');
 const feesFeedback = document.getElementById('fees-feedback');
 const modalFeeChargeDelete = document.getElementById('modal-fee-charge-delete');
@@ -1906,6 +1907,12 @@ function formatAmountIntegerDisplay(value) {
   return Math.round(amount).toLocaleString('es-AR');
 }
 
+function formatCurrencyDisplay(value) {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount)) return '0,00';
+  return amount.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function parseFormattedAmount(value) {
   const raw = String(value || '').trim();
   if (!raw) return 0;
@@ -1914,16 +1921,77 @@ function parseFormattedAmount(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function bindFormattedMoneyInput(inputEl) {
+  if (!inputEl || inputEl.dataset.moneyFormatted === 'true') return;
+  inputEl.dataset.moneyFormatted = 'true';
+
+  inputEl.addEventListener('focus', () => {
+    inputEl.select();
+  });
+
+  inputEl.addEventListener('input', () => {
+    const digits = String(inputEl.value || '').replace(/\D/g, '');
+    if (!digits) {
+      inputEl.value = '';
+      return;
+    }
+    inputEl.value = Number(digits).toLocaleString('es-AR');
+  });
+}
+
+function setFormattedMoneyValue(inputEl, value) {
+  if (!inputEl) return;
+  inputEl.value = formatAmountIntegerDisplay(value);
+}
+
 function getDefaultPaymentAmount(data) {
   const charges = Array.isArray(data?.charges) ? data.charges : [];
   const monthKey = feesCurrentPeriodFilter || getCurrentFeesMonth();
   const monthCharges = charges.filter((c) => getChargeMonthKey(c) === monthKey);
-  const withBalance = monthCharges.filter((c) => Number(c.balance || 0) > 0);
-  if (withBalance.length) {
-    return Number(withBalance.reduce((sum, c) => sum + Number(c.balance || 0), 0)).toFixed(2);
+  if (monthCharges.length) {
+    const outstandingTotal = monthCharges.reduce((sum, c) => sum + Number(c.outstanding_balance ?? c.balance ?? 0), 0);
+    return outstandingTotal > 0 ? formatAmountIntegerDisplay(outstandingTotal) : '';
   }
   const effective = Number(data?.settings?.effective_monthly_amount || data?.config?.monthly_amount || 0);
-  return effective > 0 ? effective.toFixed(2) : '';
+  return effective > 0 ? formatAmountIntegerDisplay(effective) : '';
+}
+
+function computeFeesStatusFromCharges(charges) {
+  const list = Array.isArray(charges) ? charges : [];
+  if (!list.length) {
+    return { status: 'sin_registro', overdue_total: 0, credit_total: 0 };
+  }
+
+  let overdueTotal = 0;
+  let creditTotal = 0;
+  let positiveChargesCount = 0;
+  let hasPartial = false;
+  let balanceTotal = 0;
+
+  list.forEach((charge) => {
+    const finalAmount = Number(charge.final_amount || 0);
+    const balance = Number(charge.balance || 0);
+    const outstandingBalance = Number(charge.outstanding_balance ?? (balance > 0 ? balance : 0));
+    const creditAmount = Number(charge.credit_amount ?? (balance < 0 ? Math.abs(balance) : 0));
+
+    if (finalAmount > 0) positiveChargesCount += 1;
+    if (Number(charge.overdue) && outstandingBalance > 0) overdueTotal += outstandingBalance;
+    if (creditAmount > 0) creditTotal += creditAmount;
+    if ((charge.status === 'partial' || charge.status === 'parcial') && outstandingBalance > 0) hasPartial = true;
+    balanceTotal += balance;
+  });
+
+  let status = 'al_dia';
+  if (!positiveChargesCount) status = 'sin_registro';
+  else if (overdueTotal > 0) status = 'vencida';
+  else if (hasPartial) status = 'parcial';
+  else if (balanceTotal > 0) status = 'pendiente';
+
+  return {
+    status,
+    overdue_total: overdueTotal,
+    credit_total: creditTotal,
+  };
 }
 
 function syncFeesFixedFeeField() {
@@ -1945,12 +2013,13 @@ function syncGeneralFeesPeriodFilter() {
   feesCurrentPeriodFilter = String(start).slice(0, 7);
 }
 
-function makeStatusPill(label, variant) {
+function makeStatusPill(label, variant = 'warn') {
   const pill = document.createElement('span');
   pill.className = 'status-pill';
   if (variant === 'ok') pill.classList.add('status-pill-ok');
   if (variant === 'debt') pill.classList.add('status-pill-debt');
   if (variant === 'warn') pill.classList.add('status-pill-warn');
+  if (variant === 'partial') pill.classList.add('status-pill-partial');
   pill.textContent = label;
   return pill;
 }
@@ -1974,7 +2043,7 @@ function feesChargeStatusToPill(charge) {
 async function loadFeesConfig() {
   try {
     const cfg = await apiGet('/api/fees/config');
-    if (feesConfigMonthly) feesConfigMonthly.value = String(cfg.monthly_amount ?? 0);
+    if (feesConfigMonthly) setFormattedMoneyValue(feesConfigMonthly, cfg.monthly_amount ?? 0);
     if (feesConfigDueDay) feesConfigDueDay.value = String(cfg.due_day ?? 10);
     if (feesConfigProrationMode) feesConfigProrationMode.value = cfg.proration_mode ?? 'days';
     if (feesConfigProrationPercent) feesConfigProrationPercent.value = String(cfg.proration_percent_default ?? 100);
@@ -1985,7 +2054,7 @@ async function loadFeesConfig() {
 
 btnSaveFeesConfig?.addEventListener('click', async () => {
   const payload = {
-    monthly_amount: Number(feesConfigMonthly?.value || 0),
+    monthly_amount: parseFormattedAmount(feesConfigMonthly?.value || 0),
     due_day: Number(feesConfigDueDay?.value || 10),
     proration_mode: feesConfigProrationMode?.value || 'days',
     proration_percent_default: Number(feesConfigProrationPercent?.value || 100),
@@ -2024,13 +2093,20 @@ function renderFeesOverview() {
     const name = row.full_name || `${row.last_name || ''} ${row.first_name || ''}`;
     const statusCell = document.createElement('td');
     statusCell.appendChild(feesStatusToPill(row.status));
-    const missingAmount = Number(row.balance_total || row.overdue_total || 0);
-    const quickPayDefault = formatAmountIntegerDisplay(missingAmount);
+    const signedBalance = Number(row.balance_total || 0);
+    const dueAmount = signedBalance > 0 ? signedBalance : 0;
+    const creditAmount = Number(row.credit_total || 0);
+    const periodGeneratedCredit = Number(row.period_generated_credit || 0);
+    const displayedCredit = periodGeneratedCredit > 0 ? periodGeneratedCredit : creditAmount;
+    const balanceLabel = displayedCredit > 0
+      ? `<span class="fees-credit-text">A favor $${formatCurrencyDisplay(displayedCredit)}</span>`
+      : `$${formatCurrencyDisplay(dueAmount)}`;
+    const quickPayDefault = formatAmountIntegerDisplay(dueAmount);
 
     tr.innerHTML = `
       <td>${name}</td>
       <td></td>
-      <td>$${missingAmount.toFixed(2)}</td>
+      <td>${balanceLabel}</td>
       <td><input type="text" inputmode="numeric" class="fees-overview-pay-input" value="${quickPayDefault}" /></td>
       <td><button type="button" class="btn-martial fees-overview-pay-btn">Cobrar</button></td>
       <td>${formatFeesDate(row.last_payment)}</td>
@@ -2039,19 +2115,7 @@ function renderFeesOverview() {
 
     const payInput = tr.querySelector('.fees-overview-pay-input');
     const payBtn = tr.querySelector('.fees-overview-pay-btn');
-    if (payInput) {
-      payInput.addEventListener('focus', () => {
-        payInput.select();
-      });
-      payInput.addEventListener('input', () => {
-        const digits = String(payInput.value || '').replace(/\D/g, '');
-        if (!digits) {
-          payInput.value = '';
-          return;
-        }
-        payInput.value = Number(digits).toLocaleString('es-AR');
-      });
-    }
+    bindFormattedMoneyInput(payInput);
     if (payBtn) {
       payBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -2121,25 +2185,8 @@ function renderFeesStudentDetail(data) {
   if (feesStudentNameEl) {
     feesStudentNameEl.textContent = student.full_name || `${student.last_name || ''} ${student.first_name || ''}`;
   }
-  if (feesStudentMetaEl) {
-    const belt = student.belt ? `Cinturón: ${student.belt}` : '';
-    const st = student.status ? `Estado: ${student.status}` : '';
-    feesStudentMetaEl.textContent = [belt, st].filter(Boolean).join(' · ');
-  }
-  if (feesStudentStatusEl) {
-    feesStudentStatusEl.innerHTML = '';
-    const pill = feesStatusToPill(data.status);
-    feesStudentStatusEl.appendChild(pill);
-    if (Number(data.overdue_total || 0) > 0) {
-      const debt = document.createElement('div');
-      debt.className = 'text-muted';
-      debt.textContent = `Deuda vencida: $${Number(data.overdue_total || 0).toFixed(2)}`;
-      feesStudentStatusEl.appendChild(debt);
-    }
-  }
-
   if (feesFixedFeeEnabled) feesFixedFeeEnabled.checked = Boolean(data.settings?.fixed_fee_enabled);
-  if (feesFixedFeeAmount) feesFixedFeeAmount.value = String(data.settings?.fixed_fee_amount ?? '');
+  if (feesFixedFeeAmount) setFormattedMoneyValue(feesFixedFeeAmount, data.settings?.fixed_fee_amount ?? '');
   syncFeesFixedFeeField();
 
   feesSetDefaultPeriods();
@@ -2150,6 +2197,43 @@ function renderFeesStudentDetail(data) {
   const visibleCharges = feesCurrentPeriodFilter
     ? charges.filter((c) => getChargeMonthKey(c) === feesCurrentPeriodFilter)
     : charges;
+  const detailStatus = computeFeesStatusFromCharges(visibleCharges);
+  const visibleAppliedCredit = visibleCharges.reduce((sum, charge) => sum + Number(charge.applied_credit || 0), 0);
+  if (feesStudentMetaEl) {
+    const belt = student.belt ? `Cinturón: ${student.belt}` : '';
+    const st = detailStatus.status ? `Estado: ${detailStatus.status}` : '';
+    feesStudentMetaEl.textContent = [belt, st].filter(Boolean).join(' · ');
+  }
+  if (feesStudentCreditBanner) {
+    const availableCredit = Number(data.credit_total || 0);
+    if (availableCredit > 0 || visibleAppliedCredit > 0) {
+      const parts = [];
+      if (availableCredit > 0 && visibleAppliedCredit <= 0) {
+        parts.push(`Saldo a favor generado en este período: $${formatCurrencyDisplay(availableCredit)}`);
+      } else if (availableCredit > 0) {
+        parts.push(`Saldo a favor disponible: $${formatCurrencyDisplay(availableCredit)}`);
+      }
+      if (visibleAppliedCredit > 0) {
+        parts.push(`Descuento aplicado en este período por saldo a favor: $${formatCurrencyDisplay(visibleAppliedCredit)}`);
+      }
+      feesStudentCreditBanner.textContent = parts.join(' · ');
+      feesStudentCreditBanner.classList.remove('hidden');
+    } else {
+      feesStudentCreditBanner.textContent = '';
+      feesStudentCreditBanner.classList.add('hidden');
+    }
+  }
+  if (feesStudentStatusEl) {
+    feesStudentStatusEl.innerHTML = '';
+    const pill = feesStatusToPill(detailStatus.status);
+    feesStudentStatusEl.appendChild(pill);
+    if (Number(detailStatus.overdue_total || 0) > 0) {
+      const debt = document.createElement('div');
+      debt.className = 'text-muted';
+      debt.textContent = `Deuda vencida: $${formatCurrencyDisplay(detailStatus.overdue_total || 0)}`;
+      feesStudentStatusEl.appendChild(debt);
+    }
+  }
   if (feesChargesTbody) feesChargesTbody.innerHTML = '';
   if (feesChargesEmpty) {
     feesChargesEmpty.textContent = feesCurrentPeriodFilter
@@ -2159,12 +2243,16 @@ function renderFeesStudentDetail(data) {
   }
   visibleCharges.forEach((c) => {
     const tr = document.createElement('tr');
+    const chargeBalance = Number(c.balance || 0);
+    const chargeBalanceLabel = chargeBalance < 0
+      ? `<span class="fees-credit-text">A favor $${formatCurrencyDisplay(Math.abs(chargeBalance))}</span>`
+      : `$${formatCurrencyDisplay(chargeBalance)}`;
     tr.innerHTML = `
       <td>${normalizePeriodLabel(c.period, c.due_date)}</td>
       <td>${formatFeesDate(c.due_date)}</td>
-      <td>$${Number(c.final_amount || 0).toFixed(2)}</td>
-      <td>$${Number(c.paid_amount || 0).toFixed(2)}</td>
-      <td>$${Number(c.balance || 0).toFixed(2)}</td>
+      <td>$${formatCurrencyDisplay(c.final_amount || 0)}</td>
+      <td>$${formatCurrencyDisplay(c.paid_amount || 0)}</td>
+      <td>${chargeBalanceLabel}</td>
       <td></td>
       <td></td>
     `;
@@ -2190,7 +2278,7 @@ function renderFeesStudentDetail(data) {
 
   if (feesApplyList) {
     feesApplyList.innerHTML = '';
-    const payable = charges.filter((c) => Number(c.balance || 0) > 0 && (!feesCurrentPeriodFilter || getChargeMonthKey(c) === feesCurrentPeriodFilter));
+    const payable = charges.filter((c) => Number(c.outstanding_balance ?? c.balance ?? 0) > 0 && (!feesCurrentPeriodFilter || getChargeMonthKey(c) === feesCurrentPeriodFilter));
     if (payable.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'text-muted';
@@ -2209,7 +2297,7 @@ function renderFeesStudentDetail(data) {
           cb.checked = true;
           cb.dataset.chargeId = String(c.id);
           const text = document.createElement('span');
-          text.textContent = `${normalizePeriodLabel(c.period, c.due_date)} · Saldo $${Number(c.balance || 0).toFixed(2)}`;
+          text.textContent = `${normalizePeriodLabel(c.period, c.due_date)} · Saldo $${formatCurrencyDisplay(c.outstanding_balance ?? c.balance ?? 0)}`;
           row.appendChild(cb);
           row.appendChild(text);
           feesApplyList.appendChild(row);
@@ -2224,7 +2312,7 @@ function renderFeesStudentDetail(data) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${formatFeesDate(p.payment_date)}</td>
-      <td>$${Number(p.amount || 0).toFixed(2)}</td>
+      <td>$${formatCurrencyDisplay(p.amount || 0)}</td>
       <td>${p.notes || '-'}</td>
       <td></td>
     `;
@@ -2238,7 +2326,7 @@ function renderFeesStudentDetail(data) {
         e.stopPropagation();
         pendingFeePaymentDelete = p;
         if (feePaymentDeleteMessage) {
-          feePaymentDeleteMessage.textContent = `¿Seguro que querés eliminar el pago de ${formatFeesDate(p.payment_date)} por $${Number(p.amount || 0).toFixed(2)}? Las cuotas relacionadas volverán a quedar pendientes o parciales según corresponda.`;
+          feePaymentDeleteMessage.textContent = `¿Seguro que querés eliminar el pago de ${formatFeesDate(p.payment_date)} por $${formatCurrencyDisplay(p.amount || 0)}? Las cuotas relacionadas volverán a quedar pendientes o parciales según corresponda.`;
         }
         modalFeePaymentDelete?.classList.remove('hidden');
       });
@@ -2277,7 +2365,7 @@ btnFeesGenerateStudent?.addEventListener('click', async () => {
 });
 
 btnFeesGenerateMonth?.addEventListener('click', async () => {
-  const monthlyAmount = Number(feesConfigMonthly?.value || 0);
+  const monthlyAmount = parseFormattedAmount(feesConfigMonthly?.value || 0);
   if (monthlyAmount <= 0) {
     showFeesFeedback('Primero configurá una tarifa mensual mayor a 0.', 'error');
     return;
@@ -2286,11 +2374,17 @@ btnFeesGenerateMonth?.addEventListener('click', async () => {
   const originalText = btnFeesGenerateMonth.textContent;
   try {
     btnFeesGenerateMonth.disabled = true;
+    btnFeesGenerateMonth.textContent = 'Actualizando...';
+    await apiSend('/api/fees/config', 'PUT', {
+      monthly_amount: monthlyAmount,
+      due_day: Number(feesConfigDueDay?.value || 10),
+      proration_mode: feesConfigProrationMode?.value || 'days',
+      proration_percent_default: Number(feesConfigProrationPercent?.value || 100),
+    });
     btnFeesGenerateMonth.textContent = 'Generando...';
     const res = await apiSend('/api/fees/generate-month', 'POST', payload);
-    const created = Number(res?.created ?? 0);
-    if (created > 0) {
-      showFeesFeedback(`Cuotas generadas: ${created}.`, 'info');
+    if (res?.created > 0) {
+      showFeesFeedback(`Se generaron ${res.created} cuotas.`, 'info');
     } else {
       showFeesFeedback('No se generó ninguna cuota. Revisá el período seleccionado o si esas cuotas ya existen.', 'error');
     }
@@ -2318,7 +2412,7 @@ feesPaymentForm?.addEventListener('submit', async (e) => {
 
   const payload = {
     payment_date: feesPaymentDate?.value || undefined,
-    amount: Number(feesPaymentAmount?.value || 0),
+    amount: parseFormattedAmount(feesPaymentAmount?.value || 0),
     notes: feesPaymentNotes?.value || undefined,
     apply_to_charge_ids: chargeIds,
   };
@@ -2349,7 +2443,7 @@ feesDiscountForm?.addEventListener('submit', async (e) => {
   if (feesSelectedStudentId == null) return;
   const payload = {
     fixed_fee_enabled: Boolean(feesFixedFeeEnabled?.checked),
-    fixed_fee_amount: Number(feesFixedFeeAmount?.value || 0),
+    fixed_fee_amount: parseFormattedAmount(feesFixedFeeAmount?.value || 0),
   };
   try {
     await apiSend(`/api/fees/student/${feesSelectedStudentId}/settings`, 'PUT', payload);
@@ -2377,6 +2471,10 @@ feesBulkPeriod?.addEventListener('change', async () => {
 feesSearchInput?.addEventListener('input', () => {
   renderFeesOverview();
 });
+
+bindFormattedMoneyInput(feesConfigMonthly);
+bindFormattedMoneyInput(feesPaymentAmount);
+bindFormattedMoneyInput(feesFixedFeeAmount);
 
 btnFeesRefresh?.addEventListener('click', async () => {
   await loadFeesConfig();

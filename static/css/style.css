@@ -21,6 +21,17 @@
   box-sizing: border-box;
 }
 
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type='number'] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
 .hidden {
   display: none !important;
 }
@@ -1262,6 +1273,20 @@ body.app-body {
   text-transform: uppercase;
 }
 
+.fees-credit-banner {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(76, 175, 80, 0.45);
+  background-color: rgba(56, 142, 60, 0.18);
+  color: #a5d6a7;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
 .fees-overview-row {
   cursor: pointer;
 }
@@ -1291,6 +1316,10 @@ body.app-body {
   padding: 6px 10px;
   font-size: 0.68rem;
   white-space: nowrap;
+}
+
+.fees-credit-text {
+  color: #81c784;
 }
 
 .fees-apply-box {
