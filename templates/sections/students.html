@@ -35,9 +35,10 @@
     </div>
 
     <div class="table-wrapper">
-      <table class="students-table">
+      <table class="students-table students-main-table">
         <thead>
           <tr>
+            <th>#</th>
             <th>Apellido</th>
             <th>Nombre</th>
             <th>Edad</th>
@@ -51,6 +52,27 @@
       </table>
       <div id="students-empty-state" class="students-empty-state">
         Aún no hay Alumnos cargados. Usá "Crear Alumno" para comenzar el legajo de la escuela.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="modal-student-info" class="modal hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3 class="section-heading">Info Alumno</h3>
+      <button id="btn-close-student-info" class="btn-icon">✕</button>
+    </div>
+    <div class="martial-form">
+      <div id="student-info-name" class="student-info-name"></div>
+      <label class="form-field form-field-full">
+        <span>Notas</span>
+        <textarea id="student-info-notes" rows="8" placeholder="Escribí acá notas, recordatorios o información importante del alumno..."></textarea>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="btn-cancel-student-info">Cancelar</button>
+        <button type="button" class="btn-martial" id="btn-save-student-info">Guardar info</button>
       </div>
     </div>
   </div>
@@ -276,11 +298,6 @@
         <label class="form-field form-field-full">
           <span>Email(s) de alguno de los padres</span>
           <input id="student-parent-email" type="text" placeholder="ej: padre@mail.com, madre@mail.com" />
-        </label>
-
-        <label class="form-field form-field-full">
-          <span>Notas (opcional)</span>
-          <textarea id="student-notes" rows="3" placeholder="Información extra sobre el alumno, salud, horarios, etc."></textarea>
         </label>
 
         <label class="form-field form-field-full">

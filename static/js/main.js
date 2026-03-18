@@ -217,11 +217,19 @@ const btnCancelStudentPromote = document.getElementById('btn-cancel-student-prom
 const btnConfirmStudentPromote = document.getElementById('btn-confirm-student-promote');
 const studentPromoteMessage = document.getElementById('student-promote-message');
 
+const modalStudentInfo = document.getElementById('modal-student-info');
+const btnCloseStudentInfo = document.getElementById('btn-close-student-info');
+const btnCancelStudentInfo = document.getElementById('btn-cancel-student-info');
+const btnSaveStudentInfo = document.getElementById('btn-save-student-info');
+const studentInfoName = document.getElementById('student-info-name');
+const studentInfoNotes = document.getElementById('student-info-notes');
+
 // Menú emergente reutilizable para acciones de alumno
 let studentActionsMenu = null;
 let currentStudentForMenu = null;
 let pendingDeleteStudent = null;
 let pendingPromoteStudent = null;
+let pendingInfoStudent = null;
 
 function closeStudentActionsMenu() {
   if (studentActionsMenu) {
@@ -300,6 +308,20 @@ function openStudentActionsMenu(triggerBtn, student) {
   menu.appendChild(
     makeItem('Editar alumno', () => {
       openStudentModal({ ...student, full_name: student.full_name });
+    }),
+  );
+
+  menu.appendChild(
+    makeItem('Info Alumno', () => {
+      pendingInfoStudent = student;
+      const name = student.full_name || `${student.last_name || ''} ${student.first_name || ''}`;
+      if (studentInfoName) {
+        studentInfoName.textContent = name.trim() || 'Alumno';
+      }
+      if (studentInfoNotes) {
+        studentInfoNotes.value = student.notes || '';
+      }
+      modalStudentInfo?.classList.remove('hidden');
     }),
   );
 
@@ -451,8 +473,6 @@ function openStudentModal(editData) {
       }
     }
     document.getElementById('student-parent-email').value = editData.parent_email || '';
-    const notesEl = document.getElementById('student-notes');
-    if (notesEl) notesEl.value = editData.notes || '';
     const tutorSelect = document.getElementById('student-tutor-type');
     if (tutorSelect) tutorSelect.value = editData.tutor_type || '';
   } else {
@@ -547,6 +567,33 @@ function closeStudentPromoteModal() {
 btnCloseStudentPromote?.addEventListener('click', closeStudentPromoteModal);
 btnCancelStudentPromote?.addEventListener('click', closeStudentPromoteModal);
 
+function closeStudentInfoModal() {
+  modalStudentInfo?.classList.add('hidden');
+  pendingInfoStudent = null;
+}
+
+btnCloseStudentInfo?.addEventListener('click', closeStudentInfoModal);
+btnCancelStudentInfo?.addEventListener('click', closeStudentInfoModal);
+
+btnSaveStudentInfo?.addEventListener('click', async () => {
+  if (!pendingInfoStudent || !studentInfoNotes) return;
+  const notesValue = studentInfoNotes.value || '';
+  try {
+    btnSaveStudentInfo.disabled = true;
+    btnSaveStudentInfo.textContent = 'Guardando...';
+    await apiSend(`/api/students/${pendingInfoStudent.id}`, 'PUT', { notes: notesValue });
+    await loadStudents();
+    showFeesFeedback('Info del alumno guardada.', 'info');
+    closeStudentInfoModal();
+  } catch (err) {
+    console.error(err);
+    alert('No se pudo guardar la info del alumno.');
+  } finally {
+    btnSaveStudentInfo.disabled = false;
+    btnSaveStudentInfo.textContent = 'Guardar info';
+  }
+});
+
 btnConfirmStudentPromote?.addEventListener('click', async () => {
   if (!pendingPromoteStudent) {
     closeStudentPromoteModal();
@@ -638,7 +685,7 @@ async function loadStudents() {
       return true;
     });
 
-    filtered.forEach((st) => {
+    filtered.forEach((st, index) => {
       const tr = document.createElement('tr');
       const age = st.birthdate ? calcAge(st.birthdate) : '';
       const belt = st.belt || '';
@@ -655,6 +702,7 @@ async function loadStudents() {
       const tutorPhone = tutorType === 'madre' ? (st.mother_phone || '') : (st.father_phone || '');
 
       tr.innerHTML = `
+        <td>${index + 1}</td>
         <td>${st.last_name || ''}</td>
         <td>${st.first_name || ''}</td>
         <td>${age}</td>
@@ -791,7 +839,6 @@ studentForm?.addEventListener('submit', async (e) => {
     mother_phone: document.getElementById('student-mother-phone').value,
     mother_birthdate: document.getElementById('student-mother-birthdate').value,
     parent_email: document.getElementById('student-parent-email').value,
-    notes: document.getElementById('student-notes').value,
     tutor_type: document.getElementById('student-tutor-type').value || undefined,
   };
 
@@ -2083,7 +2130,7 @@ function renderFeesOverview() {
     feesOverviewEmpty.style.display = list.length === 0 ? 'block' : 'none';
   }
 
-  list.forEach((row) => {
+  list.forEach((row, index) => {
     const tr = document.createElement('tr');
     tr.className = 'fees-overview-row';
     if (feesSelectedStudentId != null && Number(row.student_id) === Number(feesSelectedStudentId)) {
@@ -2104,6 +2151,7 @@ function renderFeesOverview() {
     const quickPayDefault = formatAmountIntegerDisplay(dueAmount);
 
     tr.innerHTML = `
+      <td>${index + 1}</td>
       <td>${name}</td>
       <td></td>
       <td>${balanceLabel}</td>
@@ -2111,7 +2159,7 @@ function renderFeesOverview() {
       <td><button type="button" class="btn-martial fees-overview-pay-btn">Cobrar</button></td>
       <td>${formatFeesDate(row.last_payment)}</td>
     `;
-    tr.children[1].appendChild(statusCell.firstChild);
+    tr.children[2].appendChild(statusCell.firstChild);
 
     const payInput = tr.querySelector('.fees-overview-pay-input');
     const payBtn = tr.querySelector('.fees-overview-pay-btn');
