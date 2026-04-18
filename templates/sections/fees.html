@@ -2,16 +2,13 @@
   <div class="panel-content">
     <div class="section-header">
       <h3 class="section-heading">Cuotas</h3>
-      <button id="btn-fees-refresh" type="button" class="btn-secondary">Actualizar</button>
+      <button id="btn-fees-history-integral" type="button" class="btn-martial btn-fees-history-header">Historial de cobros integral</button>
     </div>
 
     <div class="fees-layout">
       <section class="fees-column fees-column-left">
         <h4 class="subheading">Resumen</h4>
-        <label class="form-field form-field-full">
-          <span>Buscar alumno</span>
-          <input id="fees-search" type="text" placeholder="Apellido, nombre..." autocomplete="off" />
-        </label>
+        <input id="fees-search" type="text" class="fees-search-input" placeholder="Buscar alumno..." autocomplete="off" />
 
         <div class="table-wrapper">
           <table class="students-table fees-overview-table">
@@ -19,11 +16,10 @@
               <tr>
                 <th>#</th>
                 <th>Alumno</th>
+                <th>Activo</th>
                 <th>Estado</th>
-                <th>Falta</th>
-                <th>Paga</th>
+                <th>Deuda pendiente</th>
                 <th></th>
-                <th>Último pago</th>
               </tr>
             </thead>
             <tbody id="fees-overview-tbody"></tbody>
@@ -39,22 +35,23 @@
 
         <h4 class="subheading">Acciones del mes</h4>
         <div class="martial-form fees-bulk-form">
-          <div class="form-grid">
-            <label class="form-field">
-              <span>Período general</span>
-              <input id="fees-bulk-period" type="text" placeholder="Seleccionar período" />
-            </label>
-            <label class="form-field">
+          <div class="fees-month-config">
+            <div class="fees-month-selector">
+              <button id="btn-fees-prev-month" type="button" class="btn-icon" title="Mes anterior">‹</button>
+              <div id="fees-current-month" class="fees-month-display">Abril 2026</div>
+              <button id="btn-fees-next-month" type="button" class="btn-icon" title="Mes siguiente">›</button>
+            </div>
+            <label class="form-field fees-tariff-field">
               <span>Tarifa mensual (ARS)</span>
               <input id="fees-config-monthly" type="text" inputmode="numeric" placeholder="0" />
             </label>
           </div>
           <div class="form-actions">
-            <button id="btn-fees-generate-month" type="button" class="btn-martial">Generar cuotas para activos</button>
+            <button id="btn-fees-save-monthly-amount" type="button" class="btn-martial">Guardar valor de cuota</button>
           </div>
         </div>
 
-        <h4 class="subheading">Detalle</h4>
+        <h4 class="subheading">Alumno</h4>
 
         <div id="fees-student-empty" class="fees-student-empty text-muted">
           Seleccioná un alumno del resumen para ver sus cuotas y registrar pagos.
@@ -64,23 +61,40 @@
           <div class="fees-student-header">
             <div>
               <div id="fees-student-name" class="fees-student-name"></div>
-              <div id="fees-student-meta" class="text-muted"></div>
+              <div id="fees-student-belt" class="text-muted"></div>
               <div id="fees-student-credit-banner" class="fees-credit-banner hidden"></div>
             </div>
             <div id="fees-student-status"></div>
           </div>
 
-          <h4 class="subheading">Cuotas</h4>
-          <div class="martial-form fees-generate-form">
-            <div class="form-actions">
-              <button id="btn-fees-generate-student" type="button" class="btn-secondary">Generar cuota</button>
-            </div>
+          <h4 class="subheading">Historial de cobros</h4>
+
+          <div class="table-wrapper">
+            <table class="students-table fees-payments-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Período(s)</th>
+                  <th>Subtotal</th>
+                  <th>Descuento</th>
+                  <th>Recargo</th>
+                  <th>Total</th>
+                  <th>Notas</th>
+                  <th width="80"></th>
+                </tr>
+              </thead>
+              <tbody id="fees-payments-tbody"></tbody>
+            </table>
+            <div id="fees-payments-empty" class="students-empty-state">Aún no hay pagos registrados.</div>
           </div>
+
+          <h4 class="subheading">Cuotas pendientes</h4>
 
           <div class="table-wrapper">
             <table class="students-table fees-charges-table">
               <thead>
                 <tr>
+                  <th width="40"></th>
                   <th>Período</th>
                   <th>Vence</th>
                   <th>Total</th>
@@ -92,7 +106,7 @@
               </thead>
               <tbody id="fees-charges-tbody"></tbody>
             </table>
-            <div id="fees-charges-empty" class="students-empty-state">Aún no hay cuotas generadas.</div>
+            <div id="fees-charges-empty" class="students-empty-state">No hay cuotas pendientes.</div>
           </div>
 
           <h4 class="subheading">Registrar pago</h4>
@@ -103,58 +117,73 @@
                 <input id="fees-payment-date" type="text" />
               </label>
               <label class="form-field">
-                <span>Monto</span>
-                <input id="fees-payment-amount" type="text" inputmode="numeric" />
-              </label>
-              <label class="form-field form-field-full">
                 <span>Notas</span>
                 <input id="fees-payment-notes" type="text" placeholder="Opcional" />
               </label>
             </div>
 
-            <div class="fees-apply-box">
-              <div class="text-muted">Aplicar a cuotas (por defecto: todas las pendientes)</div>
-              <div id="fees-apply-list" class="fees-apply-list"></div>
+            <div class="fees-adjustment-box">
+              <div class="text-muted">Descuento o recargo general (opcional)</div>
+              
+              <div class="fees-adjustment-options">
+                <label class="fees-adjustment-radio">
+                  <input type="radio" name="fees-adjustment-mode" value="none" checked />
+                  <span>Sin ajuste</span>
+                </label>
+                <label class="fees-adjustment-radio">
+                  <input type="radio" name="fees-adjustment-mode" value="discount" />
+                  <span>Descuento</span>
+                </label>
+                <label class="fees-adjustment-radio">
+                  <input type="radio" name="fees-adjustment-mode" value="surcharge" />
+                  <span>Recargo</span>
+                </label>
+              </div>
+
+              <div id="fees-adjustment-fields" class="fees-adjustment-fields hidden">
+                <div class="form-grid">
+                  <label class="form-field">
+                    <span>Tipo</span>
+                    <select id="fees-adjustment-type">
+                      <option value="percent">Porcentaje</option>
+                      <option value="fixed">Monto fijo</option>
+                    </select>
+                  </label>
+                  <label class="form-field">
+                    <span>Valor</span>
+                    <input id="fees-adjustment-value" type="text" placeholder="0" />
+                  </label>
+                </div>
+              </div>
+
+              <!-- Campos ocultos para mantener compatibilidad con backend -->
+              <input type="hidden" id="fees-discount-type" value="" />
+              <input type="hidden" id="fees-discount-value" value="0" />
+              <input type="hidden" id="fees-surcharge-type" value="" />
+              <input type="hidden" id="fees-surcharge-value" value="0" />
+            </div>
+
+            <div id="fees-payment-summary" class="fees-payment-summary">
+              <div class="fees-summary-row">
+                <span class="text-muted">Subtotal:</span>
+                <span id="fees-payment-subtotal">$0</span>
+              </div>
+              <div id="fees-summary-discount-row" class="fees-summary-row hidden">
+                <span class="text-muted">Descuento:</span>
+                <span id="fees-payment-discount">$0</span>
+              </div>
+              <div id="fees-summary-surcharge-row" class="fees-summary-row hidden">
+                <span class="text-muted">Recargo:</span>
+                <span id="fees-payment-surcharge">$0</span>
+              </div>
+              <div class="fees-summary-row fees-summary-total">
+                <span>Total a pagar:</span>
+                <span id="fees-payment-total">$0</span>
+              </div>
             </div>
 
             <div class="form-actions">
               <button type="submit" class="btn-martial">Registrar pago</button>
-            </div>
-          </form>
-
-          <h4 class="subheading">Pagos</h4>
-          <div class="table-wrapper">
-            <table class="students-table fees-payments-table">
-              <thead>
-                <tr>
-                  <th>Fecha</th>
-                  <th>Monto</th>
-                  <th>Notas</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="fees-payments-tbody"></tbody>
-            </table>
-            <div id="fees-payments-empty" class="students-empty-state">Aún no hay pagos registrados.</div>
-          </div>
-
-          <h4 class="subheading">Cuota personalizada del alumno</h4>
-          <form id="fees-discount-form" class="martial-form fees-discount-form">
-            <div class="form-grid">
-              <label class="form-field fees-checkbox-field">
-                <span>Activar</span>
-                <label class="fees-inline-checkbox">
-                  <input id="fees-fixed-fee-enabled" type="checkbox" />
-                  <span>Usar valor final propio para este alumno</span>
-                </label>
-              </label>
-              <label class="form-field">
-                <span>Valor final</span>
-                <input id="fees-fixed-fee-amount" type="text" inputmode="numeric" />
-              </label>
-            </div>
-            <div class="form-actions">
-              <button id="btn-save-fees-discount" type="submit" class="btn-secondary">Guardar cuota personalizada</button>
             </div>
           </form>
         </div>
@@ -177,6 +206,72 @@
       <div class="modal-actions">
         <button type="button" class="btn-secondary" id="btn-cancel-fee-payment-delete">Cancelar</button>
         <button type="button" class="btn-martial" id="btn-confirm-fee-payment-delete">Eliminar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="modal-fees-history-integral" class="modal modal-wide hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-dialog modal-dialog-wide">
+    <div class="modal-header">
+      <h3 class="section-heading">Historial de cobros integral</h3>
+      <button id="btn-close-fees-history-integral" class="btn-icon">✕</button>
+    </div>
+    <div class="modal-body">
+      <!-- KPIs Superiores -->
+      <div class="fees-history-kpis">
+        <div class="fees-kpi-card">
+          <div class="fees-kpi-label">Cobros del mes</div>
+          <div id="fees-kpi-total-amount" class="fees-kpi-value">$0</div>
+        </div>
+        <div class="fees-kpi-card">
+          <div class="fees-kpi-label">Alumnos al día</div>
+          <div id="fees-kpi-up-to-date" class="fees-kpi-value">0</div>
+        </div>
+        <div class="fees-kpi-card">
+          <div class="fees-kpi-label">Alumnos pendientes</div>
+          <div id="fees-kpi-pending" class="fees-kpi-value">0</div>
+        </div>
+        <div class="fees-kpi-card">
+          <div class="fees-kpi-label">Tasa de cobro</div>
+          <div id="fees-kpi-collection-rate" class="fees-kpi-value">0%</div>
+        </div>
+      </div>
+
+      <!-- Filtros -->
+      <div class="fees-history-filters">
+        <div class="fees-history-filter-row">
+          <div class="fees-month-selector fees-month-selector-inline">
+            <button id="btn-fees-history-prev-month" type="button" class="btn-icon" title="Mes anterior">‹</button>
+            <div id="fees-history-month-display" class="fees-month-display">Abril 2026</div>
+            <button id="btn-fees-history-next-month" type="button" class="btn-icon" title="Mes siguiente">›</button>
+          </div>
+          <input id="fees-history-search" type="text" class="fees-history-search-input" placeholder="Buscar alumno..." />
+        </div>
+      </div>
+
+      <!-- Tabla histórica -->
+      <div class="table-wrapper fees-history-table-wrapper">
+        <table class="students-table fees-history-table">
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Alumno</th>
+              <th>Período(s)</th>
+              <th>Subtotal</th>
+              <th>Descuento</th>
+              <th>Recargo</th>
+              <th>Total</th>
+              <th>Observaciones</th>
+              <th width="80"></th>
+            </tr>
+          </thead>
+          <tbody id="fees-history-tbody"></tbody>
+        </table>
+        <div id="fees-history-empty" class="students-empty-state">
+          No hay cobros registrados para el período seleccionado.
+        </div>
       </div>
     </div>
   </div>
