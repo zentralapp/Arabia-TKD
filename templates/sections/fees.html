@@ -120,6 +120,29 @@
                 <span>Notas</span>
                 <input id="fees-payment-notes" type="text" placeholder="Opcional" />
               </label>
+              <label class="form-field">
+                <span>Monto abonado (ARS)</span>
+                <input id="fees-payment-amount" type="text" inputmode="numeric" placeholder="0" />
+              </label>
+            </div>
+
+            <div class="fees-payment-context">
+              <div class="fees-summary-row">
+                <span class="text-muted">Total cuota:</span>
+                <span id="fees-payment-charge-total">$0</span>
+              </div>
+              <div class="fees-summary-row">
+                <span class="text-muted">Pagado acumulado:</span>
+                <span id="fees-payment-charge-paid">$0</span>
+              </div>
+              <div class="fees-summary-row">
+                <span class="text-muted">Saldo pendiente actual:</span>
+                <span id="fees-payment-charge-balance">$0</span>
+              </div>
+              <div class="fees-summary-row fees-summary-total">
+                <span>Monto que está abonando ahora:</span>
+                <span id="fees-payment-amount-preview">$0</span>
+              </div>
             </div>
 
             <div class="fees-adjustment-box">

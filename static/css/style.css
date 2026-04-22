@@ -1590,6 +1590,17 @@ body.app-body {
   gap: 8px;
 }
 
+.fees-payment-context {
+  border: 1px solid #222;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-top: 10px;
+  background-color: rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .fees-section-header {
   display: flex;
   justify-content: space-between;

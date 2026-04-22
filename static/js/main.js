@@ -673,13 +673,12 @@ async function loadStudents() {
 
       // filtro por estado (activo/inactivo)
       if (selectedStatus) {
-        const rawStatus = (s.status == null || s.status === '') ? 'activo' : String(s.status);
-        const statusValue = rawStatus.toLowerCase().trim();
+        const isInactive = s.is_active === false;
 
         // "Activos": cualquier alumno que NO esté marcado explícitamente como "inactivo".
-        if (selectedStatus === 'active' && statusValue === 'inactivo') return false;
+        if (selectedStatus === 'active' && isInactive) return false;
         // "Inactivos": solo los que están exactamente como "inactivo".
-        if (selectedStatus === 'inactive' && statusValue !== 'inactivo') return false;
+        if (selectedStatus === 'inactive' && !isInactive) return false;
       }
 
       return true;
@@ -727,16 +726,17 @@ async function loadStudents() {
         statusBtn.classList.toggle('student-status-active', !isInactive);
       };
 
-      applyStatusToButton(st.status);
+      applyStatusToButton(st.is_active === false ? 'inactivo' : 'activo');
 
       statusBtn.addEventListener('click', async (event) => {
         event.stopPropagation();
-        const current = (st.status || 'activo').toLowerCase() === 'inactivo' ? 'inactivo' : 'activo';
+        const current = st.is_active === false ? 'inactivo' : 'activo';
         const next = current === 'activo' ? 'inactivo' : 'activo';
 
         try {
           await apiSend(`/api/students/${st.id}`, 'PUT', { status: next });
           st.status = next;
+          st.is_active = next !== 'inactivo';
           applyStatusToButton(st.status);
         } catch (err) {
           console.error(err);
@@ -1815,6 +1815,11 @@ const feesApplyList = document.getElementById('fees-apply-list');
 const feesPaymentForm = document.getElementById('fees-payment-form');
 const feesPaymentDate = document.getElementById('fees-payment-date');
 const feesPaymentNotes = document.getElementById('fees-payment-notes');
+const feesPaymentAmount = document.getElementById('fees-payment-amount');
+const feesPaymentChargeTotal = document.getElementById('fees-payment-charge-total');
+const feesPaymentChargePaid = document.getElementById('fees-payment-charge-paid');
+const feesPaymentChargeBalance = document.getElementById('fees-payment-charge-balance');
+const feesPaymentAmountPreview = document.getElementById('fees-payment-amount-preview');
 
 // Nuevos elementos del bloque unificado de ajustes
 const feesAdjustmentFields = document.getElementById('fees-adjustment-fields');
@@ -2085,16 +2090,15 @@ function setFormattedMoneyValue(inputEl, value) {
   inputEl.value = formatAmountIntegerDisplay(value);
 }
 
-function getDefaultPaymentAmount(data) {
-  const charges = Array.isArray(data?.charges) ? data.charges : [];
-  const monthKey = feesCurrentPeriodFilter || getCurrentFeesMonth();
-  const monthCharges = charges.filter((c) => getChargeMonthKey(c) === monthKey);
-  if (monthCharges.length) {
-    const outstandingTotal = monthCharges.reduce((sum, c) => sum + Number(c.outstanding_balance ?? c.balance ?? 0), 0);
-    return outstandingTotal > 0 ? formatAmountIntegerDisplay(outstandingTotal) : '';
-  }
-  const effective = Number(data?.settings?.effective_monthly_amount || data?.config?.monthly_amount || 0);
-  return effective > 0 ? formatAmountIntegerDisplay(effective) : '';
+function getSelectedFeesCharges() {
+  const charges = feesSelectedStudentData?.charges || [];
+  const selectedCheckboxes = document.querySelectorAll('.fees-charge-checkbox:checked');
+  const selectedIds = [];
+  selectedCheckboxes.forEach((cb) => {
+    const id = Number(cb.dataset.chargeId || 0);
+    if (id > 0) selectedIds.push(id);
+  });
+  return charges.filter((charge) => selectedIds.includes(Number(charge.id)));
 }
 
 function computeFeesStatusFromCharges(charges) {
@@ -2141,18 +2145,27 @@ function updateFeesPaymentSummary() {
     if (feesPaymentDiscount) feesPaymentDiscount.textContent = '-$0';
     if (feesPaymentSurcharge) feesPaymentSurcharge.textContent = '+$0';
     if (feesPaymentTotal) feesPaymentTotal.textContent = '$0';
+    if (feesPaymentChargeTotal) feesPaymentChargeTotal.textContent = '$0';
+    if (feesPaymentChargePaid) feesPaymentChargePaid.textContent = '$0';
+    if (feesPaymentChargeBalance) feesPaymentChargeBalance.textContent = '$0';
+    if (feesPaymentAmountPreview) feesPaymentAmountPreview.textContent = '$0';
     return;
   }
   
-  // Calcular subtotal desde checkboxes seleccionados
-  const selectedCheckboxes = document.querySelectorAll('.fees-charge-checkbox:checked');
-  let subtotal = 0;
-  selectedCheckboxes.forEach(cb => {
-    const balance = Number(cb.dataset.balance || 0);
-    if (balance > 0) {
-      subtotal += balance;
-    }
-  });
+  const selectedCharges = getSelectedFeesCharges();
+  const chargeTotal = selectedCharges.reduce((sum, charge) => sum + Number(charge.final_amount || 0), 0);
+  const paidTotal = selectedCharges.reduce((sum, charge) => sum + Number(charge.paid_amount || 0), 0);
+  const pendingTotal = selectedCharges.reduce((sum, charge) => {
+    const balance = Number(charge.outstanding_balance ?? charge.balance ?? 0);
+    return sum + (balance > 0 ? balance : 0);
+  }, 0);
+
+  if (feesPaymentAmount && feesPaymentAmount.dataset.dirty !== '1') {
+    setFormattedMoneyValue(feesPaymentAmount, pendingTotal);
+  }
+
+  const enteredAmount = parseFormattedAmount(feesPaymentAmount?.value || 0);
+  const subtotal = enteredAmount > 0 ? enteredAmount : pendingTotal;
   
   let discountAmount = 0;
   const discountType = feesDiscountType?.value || '';
@@ -2186,6 +2199,10 @@ function updateFeesPaymentSummary() {
   feesPaymentDiscount.textContent = discountAmount > 0 ? `-$${formatCurrencyDisplay(discountAmount)}` : '$0,00';
   feesPaymentSurcharge.textContent = surchargeAmount > 0 ? `+$${formatCurrencyDisplay(surchargeAmount)}` : '$0,00';
   feesPaymentTotal.textContent = `$${formatCurrencyDisplay(total)}`;
+  if (feesPaymentChargeTotal) feesPaymentChargeTotal.textContent = `$${formatCurrencyDisplay(chargeTotal)}`;
+  if (feesPaymentChargePaid) feesPaymentChargePaid.textContent = `$${formatCurrencyDisplay(paidTotal)}`;
+  if (feesPaymentChargeBalance) feesPaymentChargeBalance.textContent = `$${formatCurrencyDisplay(pendingTotal)}`;
+  if (feesPaymentAmountPreview) feesPaymentAmountPreview.textContent = `$${formatCurrencyDisplay(subtotal)}`;
   
   // NUEVO: Mostrar/ocultar renglones según modo de ajuste seleccionado
   const selectedMode = document.querySelector('input[name="fees-adjustment-mode"]:checked')?.value || 'none';
@@ -2232,6 +2249,7 @@ function makeStatusPill(label, variant = 'warn') {
   if (variant === 'ok') pill.classList.add('status-pill-ok');
   if (variant === 'debt') pill.classList.add('status-pill-debt');
   if (variant === 'warn') pill.classList.add('status-pill-warn');
+  if (variant === 'inactive') pill.classList.add('status-pill-inactive');
   if (variant === 'partial') pill.classList.add('status-pill-partial');
   pill.textContent = label;
   return pill;
@@ -2375,9 +2393,11 @@ function renderFeesStudentDetail(data) {
     feesStudentBeltEl.textContent = '';
   }
 
-  feesSetDefaultPeriods();
+  // CORRECCIÓN: NO resetear el período al mes actual
+  // El período debe mantenerse en el mes seleccionado por el usuario
   if (feesPaymentDate && !feesPaymentDate.value) feesPaymentDate.value = feesTodayDate();
-  syncGeneralFeesPeriodFilter();
+  if (feesPaymentAmount) feesPaymentAmount.dataset.dirty = '0';
+  // syncGeneralFeesPeriodFilter ya no es necesario porque el período no debe cambiar
 
   const charges = Array.isArray(data.charges) ? data.charges : [];
   const visibleCharges = feesCurrentPeriodFilter
@@ -2497,7 +2517,10 @@ function renderFeesStudentDetail(data) {
     checkbox.dataset.chargeId = c.id;
     checkbox.dataset.balance = chargeBalance;
     checkbox.checked = true; // Por defecto seleccionado
-    checkbox.addEventListener('change', updateFeesPaymentSummary);
+    checkbox.addEventListener('change', () => {
+      if (feesPaymentAmount) feesPaymentAmount.dataset.dirty = '0';
+      updateFeesPaymentSummary();
+    });
     checkboxTd.appendChild(checkbox);
     
     tr.children[6].appendChild(feesChargeStatusToPill(c));
@@ -2520,13 +2543,16 @@ function renderFeesStudentDetail(data) {
     feesChargesTbody?.appendChild(tr);
   });
 
+  if (feesPaymentAmount) feesPaymentAmount.dataset.dirty = '0';
   updateFeesPaymentSummary();
 }
 
 async function loadFeesStudentDetail() {
   if (feesSelectedStudentId == null) return;
   try {
-    const data = await apiGet(`/api/fees/student/${feesSelectedStudentId}`);
+    // CORRECCIÓN CRÍTICA: Pasar el período seleccionado para que el backend respete el mes activo
+    const period = feesCurrentPeriodFilter || `${feesCurrentYear}-${String(feesCurrentMonth + 1).padStart(2, '0')}`;
+    const data = await apiGet(`/api/fees/student/${feesSelectedStudentId}?period=${period}`);
     renderFeesStudentDetail(data);
   } catch (err) {
     console.error(err);
@@ -2561,6 +2587,7 @@ btnFeesPrevMonth?.addEventListener('click', async () => {
     feesCurrentYear--;
   }
   updateFeesMonthDisplay();
+  await loadFeesConfig();  // ✅ CORRECCIÓN: Cargar tarifa del período
   await loadFeesOverview();
   if (feesSelectedStudentId != null) {
     await loadFeesStudentDetail();
@@ -2574,6 +2601,7 @@ btnFeesNextMonth?.addEventListener('click', async () => {
     feesCurrentYear++;
   }
   updateFeesMonthDisplay();
+  await loadFeesConfig();  // ✅ CORRECCIÓN: Cargar tarifa del período
   await loadFeesOverview();
   if (feesSelectedStudentId != null) {
     await loadFeesStudentDetail();
@@ -2584,27 +2612,31 @@ feesPaymentForm?.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (feesSelectedStudentId == null) return;
 
-  // Obtener cuotas desde checkboxes seleccionados
-  const selectedCheckboxes = document.querySelectorAll('.fees-charge-checkbox:checked');
-  const chargeIds = [];
-  selectedCheckboxes.forEach(cb => {
-    const id = cb.dataset.chargeId;
-    if (id) chargeIds.push(Number(id));
-  });
+  const selectedCharges = getSelectedFeesCharges();
+  const chargeIds = selectedCharges.map((c) => Number(c.id)).filter((id) => id > 0);
 
   if (chargeIds.length === 0) {
     showFeesFeedback('Seleccioná al menos una cuota a abonar.', 'error');
     return;
   }
 
-  const subtotal = chargeIds.reduce((sum, chargeId) => {
-    const charges = feesSelectedStudentData?.charges || [];
-    const charge = charges.find(c => Number(c.id) === chargeId);
-    if (charge) {
-      return sum + Number(charge.outstanding_balance ?? charge.balance ?? 0);
-    }
-    return sum;
+  const selectedPendingTotal = selectedCharges.reduce((sum, charge) => {
+    const pending = Number(charge.outstanding_balance ?? charge.balance ?? 0);
+    return sum + (pending > 0 ? pending : 0);
   }, 0);
+
+  const enteredAmount = parseFormattedAmount(feesPaymentAmount?.value || 0);
+  if (enteredAmount <= 0) {
+    showFeesFeedback('Ingresá un monto abonado mayor a 0.', 'error');
+    return;
+  }
+
+  if (enteredAmount > selectedPendingTotal) {
+    showFeesFeedback(`El monto abonado supera el saldo pendiente seleccionado ($${formatCurrencyDisplay(selectedPendingTotal)}).`, 'error');
+    return;
+  }
+
+  const subtotal = enteredAmount;
 
   const discountType = feesDiscountType?.value || '';
   const discountValue = parseFormattedAmount(feesDiscountValue?.value || 0);
@@ -2633,6 +2665,16 @@ feesPaymentForm?.addEventListener('submit', async (e) => {
 
   const totalAmount = Math.max(subtotal - discountAmount + surchargeAmount, 0);
 
+  if (totalAmount <= 0) {
+    showFeesFeedback('El total a pagar debe ser mayor a 0.', 'error');
+    return;
+  }
+
+  if (totalAmount > selectedPendingTotal) {
+    showFeesFeedback(`El total a pagar supera el saldo pendiente seleccionado ($${formatCurrencyDisplay(selectedPendingTotal)}).`, 'error');
+    return;
+  }
+
   const payload = {
     payment_date: feesPaymentDate?.value || undefined,
     amount: totalAmount,
@@ -2658,6 +2700,10 @@ feesPaymentForm?.addEventListener('submit', async (e) => {
     if (feesDiscountValue) feesDiscountValue.value = '';
     if (feesSurchargeType) feesSurchargeType.value = '';
     if (feesSurchargeValue) feesSurchargeValue.value = '';
+    if (feesPaymentAmount) {
+      feesPaymentAmount.dataset.dirty = '0';
+      feesPaymentAmount.value = '';
+    }
     
     showFeesFeedback('Pago registrado correctamente.', 'success');
     
@@ -2687,7 +2733,9 @@ if (feesOverviewTbody) {
       if (!studentId) return;
       
       try {
-        await apiSend(`/api/students/${studentId}/toggle-active`, 'PUT', {});
+        // CORRECCIÓN: Pasar el período seleccionado para que el cambio aplique solo a ese mes
+        const period = feesCurrentPeriodFilter || `${feesCurrentYear}-${String(feesCurrentMonth + 1).padStart(2, '0')}`;
+        await apiSend(`/api/students/${studentId}/toggle-active`, 'PUT', { period });
         await loadFeesOverview();
         if (Number(studentId) === Number(feesSelectedStudentId)) {
           await loadFeesStudentDetail();
@@ -2763,6 +2811,12 @@ feesAdjustmentValue?.addEventListener('input', () => {
 
 bindFormattedMoneyInput(feesConfigMonthly);
 bindFormattedMoneyInput(feesAdjustmentValue);
+bindFormattedMoneyInput(feesPaymentAmount);
+
+feesPaymentAmount?.addEventListener('input', () => {
+  feesPaymentAmount.dataset.dirty = '1';
+  updateFeesPaymentSummary();
+});
 
 // CORRECCIÓN 1: Agregar formato de moneda al campo Tarifa mensual (ARS)
 if (feesConfigMonthly) {

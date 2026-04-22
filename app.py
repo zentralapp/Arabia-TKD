@@ -186,6 +186,20 @@ class StudentFeeSettings(db.Model):
     discount_value = db.Column(db.Numeric(10, 2), nullable=False, default=0)
 
 
+class StudentStatusHistory(db.Model):
+    __tablename__ = "student_status_history"
+
+    id = db.Column(db.Integer, primary_key=True)
+    student_id = db.Column(db.Integer, db.ForeignKey("students.id"), nullable=False)
+    effective_period = db.Column(db.String(7), nullable=False)  # YYYY-MM desde cuando aplica
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        db.Index('idx_student_status_period', 'student_id', 'effective_period'),
+    )
+
+
 class FeeCharge(db.Model):
     __tablename__ = "fee_charges"
 
@@ -225,6 +239,10 @@ def index():
 @app.route('/api/students', methods=['GET', 'POST'])
 def api_students():
     if request.method == 'GET':
+        _ensure_fees_tables()
+        today = date.today()
+        current_period = f'{today.year:04d}-{today.month:02d}'
+
         # Asegurar que la columna tutor_type exista en entornos como Railway (Postgres).
         # Si ya existe o la BD no soporta IF NOT EXISTS, se ignora cualquier error.
         try:
@@ -244,6 +262,7 @@ def api_students():
         ).all()
         result = []
         for s in students_q:
+            is_active_current_period = _get_student_status_for_period(s.id, current_period)
             result.append({
                 'id': s.id,
                 'full_name': s.full_name,
@@ -253,7 +272,7 @@ def api_students():
                 'gender': s.gender,
                 'birthdate': s.birthdate.isoformat() if s.birthdate else None,
                 'blood': s.blood,
-                'is_active': getattr(s, 'is_active', True),  # Safe fallback
+                'is_active': is_active_current_period,
                 'nationality': s.nationality,
                 'province': s.province,
                 'country': s.country,
@@ -270,8 +289,9 @@ def api_students():
                 'mother_phone': s.mother_phone,
                 'parent_email': s.parent_email,
                 'notes': s.notes,
-                'status': s.status,
+                'status': 'activo' if is_active_current_period else 'inactivo',
                 'tutor_type': s.tutor_type,
+                'status_period': current_period,
             })
         return jsonify(result)
 
@@ -339,9 +359,26 @@ def api_student_toggle_active(student_id: int):
     if not student:
         return jsonify({'error': 'Alumno no encontrado'}), 404
     
-    student.is_active = not student.is_active
-    db.session.commit()
-    return jsonify({'id': student.id, 'is_active': student.is_active})
+    # Estado Activo/Inactivo estrictamente por período (sin arrastre a otros meses)
+    data = request.json or {}
+    effective_period = data.get('period', '').strip()
+    
+    if not effective_period:
+        # Si no se especifica período, usar el mes actual
+        today = date.today()
+        effective_period = f'{today.year:04d}-{today.month:02d}'
+
+    if not _parse_period(effective_period):
+        return jsonify({'error': 'Período inválido. Usá formato YYYY-MM.'}), 400
+    
+    # Toggle del estado mensual para el período seleccionado (no global)
+    current_active = _get_student_status_for_period(student_id, effective_period)
+    new_active = not current_active
+    
+    # Registrar cambio solo para el período seleccionado
+    _set_student_status_from_period(student_id, effective_period, new_active)
+    
+    return jsonify({'id': student.id, 'is_active': new_active, 'effective_period': effective_period})
 
 
 @app.route('/api/students/<int:student_id>', methods=['GET', 'PUT', 'DELETE'])
@@ -382,14 +419,21 @@ def api_student_detail(student_id: int):
 
     if request.method == 'PUT':
         data = request.json or {}
+        status_is_active_for_current_period = None
         for field in [
             'full_name', 'last_name', 'first_name', 'dni', 'gender', 'blood',
             'nationality', 'province', 'country', 'city', 'address', 'zip',
             'school', 'belt', 'father_name', 'mother_name', 'father_phone',
-            'mother_phone', 'parent_email', 'notes', 'status', 'tutor_type',
+            'mother_phone', 'parent_email', 'notes', 'tutor_type',
         ]:
             if field in data:
                 setattr(student, field, data[field])
+
+        if 'status' in data:
+            status_raw = str(data.get('status') or '').strip().lower()
+            if status_raw in ('activo', 'inactivo'):
+                student.status = status_raw
+                status_is_active_for_current_period = (status_raw == 'activo')
 
         if 'birthdate' in data:
             try:
@@ -409,7 +453,12 @@ def api_student_detail(student_id: int):
             except (ValueError, TypeError):
                 student.mother_birthdate = None
 
-        db.session.commit()
+        if status_is_active_for_current_period is not None:
+            today = date.today()
+            current_period = f'{today.year:04d}-{today.month:02d}'
+            _set_student_status_from_period(student_id, current_period, status_is_active_for_current_period)
+        else:
+            db.session.commit()
         return jsonify({'status': 'ok'})
 
     if request.method == 'DELETE':
@@ -594,6 +643,57 @@ def _get_student_fee_settings(student_id: int):
     return settings
 
 
+def _get_student_status_for_period(student_id: int, period: str) -> bool:
+    """
+    Obtiene el estado activo/inactivo del alumno para un período específico (exacto).
+    Si no hay registro para ese período, se considera activo por defecto.
+    """
+    _ensure_fees_tables()
+    student = db.session.get(Student, student_id)
+    if not student:
+        return False
+    
+    # Buscar estado EXACTO del período (sin herencia a meses siguientes).
+    status_record = (
+        StudentStatusHistory.query
+        .filter_by(student_id=student_id, effective_period=period)
+        .first()
+    )
+    
+    if status_record:
+        return status_record.is_active
+    
+    # Si no hay historial para ese mes, por defecto activo.
+    return True
+
+
+def _set_student_status_from_period(student_id: int, period: str, is_active: bool):
+    """
+    Registra un cambio de estado del alumno para un período específico.
+    Si ya existe un registro para ese período exacto, lo actualiza.
+    Si no, crea uno nuevo.
+    """
+    _ensure_fees_tables()
+    
+    existing = (
+        StudentStatusHistory.query
+        .filter_by(student_id=student_id, effective_period=period)
+        .first()
+    )
+    
+    if existing:
+        existing.is_active = is_active
+    else:
+        new_record = StudentStatusHistory(
+            student_id=student_id,
+            effective_period=period,
+            is_active=is_active
+        )
+        db.session.add(new_record)
+    
+    db.session.commit()
+
+
 def _parse_period(period_raw: str):
     value = (period_raw or '').strip()
     if len(value) != 7 or value[4] != '-':
@@ -656,11 +756,10 @@ def _create_fee_charge(student_id: int, cfg: FeeConfig, settings: StudentFeeSett
     if base_amount <= 0:
         return False
     
-    discount_amount = _compute_discount_amount(base_amount, settings)
-    net = base_amount - discount_amount
-    if net < 0:
-        net = 0
-    final_amount = round(net, 2)
+    # CORRECCIÓN CRÍTICA: NO aplicar descuentos permanentes en la cuota base
+    # Todos los alumnos del período deben tener el mismo valor base
+    # Los descuentos se aplican solo en el momento del pago
+    final_amount = round(base_amount, 2)
 
     year = period_info['year']
     month = period_info['month']
@@ -671,11 +770,11 @@ def _create_fee_charge(student_id: int, cfg: FeeConfig, settings: StudentFeeSett
         period=period_info['period'],
         due_date=due_date,
         base_amount=round(base_amount, 2),
-        discount_amount=round(discount_amount, 2),
+        discount_amount=0.00,  # Sin descuentos en la cuota base
         proration_mode='percent',
         proration_percent=100,
         proration_start_date=None,
-        final_amount=final_amount,
+        final_amount=final_amount,  # Valor exacto del período
     )
     db.session.add(charge)
     return True
@@ -710,6 +809,50 @@ def _compute_discount_amount(base_amount: float, settings: StudentFeeSettings):
     if discount > base_amount:
         discount = base_amount
     return round(discount, 2)
+
+
+def _update_period_charges_with_new_rate(period: str, new_monthly_amount: float):
+    """
+    Actualiza las cuotas pendientes (no pagadas completamente) de un período específico
+    con la nueva tarifa mensual.
+    
+    Solo actualiza cuotas que tienen saldo pendiente.
+    No toca cuotas completamente pagadas para preservar el historial.
+    """
+    if new_monthly_amount <= 0:
+        return
+    
+    # Obtener todas las cuotas del período
+    period_charges = FeeCharge.query.filter_by(period=period).all()
+    
+    if not period_charges:
+        return
+    
+    # Obtener allocations para saber cuánto se pagó de cada cuota
+    charge_ids = [c.id for c in period_charges]
+    allocations = FeeAllocation.query.filter(FeeAllocation.charge_id.in_(charge_ids)).all()
+    
+    paid_by_charge = {}
+    for a in allocations:
+        paid_by_charge[a.charge_id] = paid_by_charge.get(a.charge_id, 0.0) + float(a.amount)
+    
+    # Actualizar solo cuotas con saldo pendiente
+    for charge in period_charges:
+        paid_amount = paid_by_charge.get(charge.id, 0.0)
+        old_final = float(charge.final_amount or 0)
+        
+        # Si la cuota está completamente pagada, no tocarla (preservar historial)
+        if paid_amount >= old_final and old_final > 0:
+            continue
+        
+        # CORRECCIÓN CRÍTICA: Actualizar al valor exacto del período sin descuentos
+        # Todos los alumnos del período deben tener el mismo valor base
+        # Los descuentos se aplican solo en el momento del pago, no en la cuota base
+        charge.base_amount = round(new_monthly_amount, 2)
+        charge.discount_amount = 0.00  # Sin descuentos en la cuota base
+        charge.final_amount = round(new_monthly_amount, 2)  # Valor exacto del período
+    
+    db.session.commit()
 
 
 def _refresh_student_fee_charges(student_id: int, cfg: FeeConfig, settings: StudentFeeSettings):
@@ -1043,23 +1186,33 @@ def _build_charge_financials(charges, allocated_map, student_credit=0.0, today_v
     }
 
 
-def _serialize_student_fees(student_id: int):
+def _serialize_student_fees(student_id: int, target_period: str = None):
+    """
+    Serializa las cuotas y pagos de un alumno.
+    Si target_period se especifica (formato YYYY-MM), genera cuota solo para ese período.
+    Si no se especifica, genera cuota para el mes actual.
+    """
     _ensure_fees_tables()
     cfg = _get_fee_config()
     settings = _get_student_fee_settings(student_id)
     today = date.today()
     
-    # Generar cuota del mes actual si no existe para alumno activo
+    # Determinar el período para el cual generar cuota
+    if target_period:
+        period_to_generate = target_period
+    else:
+        period_to_generate = f'{today.year:04d}-{today.month:02d}'
+    
+    # Generar cuota del período especificado si no existe y el alumno estaba activo en ese período
     student = db.session.get(Student, student_id)
     if student:
-        is_active = getattr(student, 'is_active', True)
-        if is_active:
-            current_period = f'{today.year:04d}-{today.month:02d}'
-            period_info = _parse_period(current_period)
+        is_active_in_period = _get_student_status_for_period(student_id, period_to_generate)
+        if is_active_in_period:
+            period_info = _parse_period(period_to_generate)
             if period_info:
-                existing_charge = FeeCharge.query.filter_by(student_id=student_id, period=current_period).first()
+                existing_charge = FeeCharge.query.filter_by(student_id=student_id, period=period_to_generate).first()
                 if not existing_charge:
-                    # Generar cuota del mes actual automáticamente
+                    # Generar cuota del período especificado automáticamente
                     _create_fee_charge(student_id, cfg, settings, period_info, {})
                     db.session.commit()
 
@@ -1068,8 +1221,14 @@ def _serialize_student_fees(student_id: int):
     charge_ids = [c.id for c in charges]
     allocated_map = _get_charge_allocated_amounts(charge_ids)
     
-    # NUEVO: Calcular descuentos/recargos aplicados a cada cuota
-    charge_adjustments = _get_charge_adjustments_from_payments(charge_ids, student_id)
+    # IMPORTANTE:
+    # Cuando se consulta un período específico, la cuota del período debe respetar
+    # su valor base oficial (tarifa mensual del período), sin arrastrar ajustes
+    # históricos de otros pagos.
+    if target_period:
+        charge_adjustments = {}
+    else:
+        charge_adjustments = _get_charge_adjustments_from_payments(charge_ids, student_id)
     
     payment_ids = [p.id for p in payments]
     allocations = []
@@ -1085,8 +1244,9 @@ def _serialize_student_fees(student_id: int):
             'amount': float(a.amount),
         })
     student_credit = 0.0
-    for p in payments:
-        student_credit += round(float(p.amount or 0) - float(allocated_by_payment.get(p.id, 0.0)), 2)
+    if not target_period:
+        for p in payments:
+            student_credit += round(float(p.amount or 0) - float(allocated_by_payment.get(p.id, 0.0)), 2)
     
     # NUEVO: Pasar charge_adjustments a _build_charge_financials
     financials = _build_charge_financials(charges, allocated_map, student_credit=student_credit, today_value=today, charge_adjustments=charge_adjustments)
@@ -1104,7 +1264,9 @@ def _serialize_student_fees(student_id: int):
             'proration_mode': c.proration_mode,
             'proration_percent': float(c.proration_percent or 0),
             'proration_start_date': c.proration_start_date.isoformat() if c.proration_start_date else None,
-            'final_amount': float(meta.get('total', 0.0)),
+            # Mostrar siempre el valor oficial de la cuota almacenada en fee_charges
+            # (la tarifa mensual normalizada del período).
+            'final_amount': float(c.final_amount or 0),
             'paid_amount': round(float(meta.get('paid', 0.0)), 2),
             'applied_credit': round(float(meta.get('applied_credit', 0.0)), 2),
             'balance': round(float(meta.get('balance', 0.0)), 2),
@@ -1179,10 +1341,10 @@ def _serialize_student_fees(student_id: int):
 
     if not charges_out or financials['positive_charges_count'] == 0:
         status = 'sin_registro'
-    elif financials['overdue_total'] > 0:
-        status = 'vencida'
     elif financials['has_partial']:
         status = 'parcial'
+    elif financials['overdue_total'] > 0:
+        status = 'vencida'
     elif financials['balance_total'] > 0:
         status = 'pendiente'
     else:
@@ -1256,14 +1418,20 @@ def api_fees_config():
         else:
             monthly_value = FeeMonthlyValue(period=period, monthly_amount=amount)
             db.session.add(monthly_value)
+        
+        db.session.commit()
+        
+        # CORRECCIÓN CRÍTICA: Actualizar cuotas pendientes del período con la nueva tarifa
+        _update_period_charges_with_new_rate(period, amount)
+        
     elif 'monthly_amount' in data:
         # Actualizar valor global si no se especifica período
         try:
             cfg.monthly_amount = float(data.get('monthly_amount') or 0)
         except (TypeError, ValueError):
             cfg.monthly_amount = 0
+        db.session.commit()
 
-    db.session.commit()
     return jsonify({'status': 'ok'})
 
 
@@ -1272,7 +1440,19 @@ def api_fees_student(student_id: int):
     student = db.session.get(Student, student_id)
     if not student:
         return jsonify({'error': 'Alumno no encontrado'}), 404
-    data = _serialize_student_fees(student_id)
+    
+    # CORRECCIÓN CRÍTICA: Recibir período seleccionado desde el frontend
+    target_period = request.args.get('period', '').strip()
+    if not target_period:
+        # Si no se especifica período, usar el mes actual
+        today = date.today()
+        target_period = f'{today.year:04d}-{today.month:02d}'
+    
+    data = _serialize_student_fees(student_id, target_period=target_period)
+    
+    # Agregar el estado del alumno para el período específico
+    is_active_in_period = _get_student_status_for_period(student_id, target_period)
+    
     data['student'] = {
         'id': student.id,
         'full_name': student.full_name,
@@ -1280,6 +1460,8 @@ def api_fees_student(student_id: int):
         'first_name': student.first_name,
         'status': student.status,
         'belt': student.belt,
+        'is_active_in_period': is_active_in_period,
+        'target_period': target_period,
     }
     return jsonify(data)
 
@@ -1416,6 +1598,7 @@ def api_fees_overview():
     _ensure_fees_tables()
     today = date.today()
     period_filter = _parse_period(request.args.get('period'))
+    current_period = f'{today.year:04d}-{today.month:02d}'
 
     students = Student.query.order_by(
         (Student.last_name.is_(None)).asc(),
@@ -1423,12 +1606,13 @@ def api_fees_overview():
         Student.first_name.asc(),
     ).all()
 
+    # CORRECCIÓN: Si hay filtro de período, usar estado histórico para ese período
+    # Si no hay filtro, usar el estado actual del alumno
     active_students = []
     active_ids = []
     for s in students:
-        st_status = (s.status or 'activo').strip().lower()
-        if st_status == 'inactivo':
-            continue
+        # En cuotas se deben mostrar SIEMPRE todos los alumnos.
+        # El estado Activo/Inactivo es mensual y solo afecta el badge/estado, no la visibilidad.
         active_students.append(s)
         active_ids.append(s.id)
 
@@ -1486,35 +1670,28 @@ def api_fees_overview():
 
     out = []
     for s in active_students:
-        # Si el alumno está inactivo, su estado es 'inactivo'
-        # Usar getattr con fallback para compatibilidad durante migraciones
-        is_active = getattr(s, 'is_active', True)
-        if not is_active:
-            out.append({
-                'student_id': s.id,
-                'full_name': s.full_name,
-                'last_name': s.last_name,
-                'first_name': s.first_name,
-                'belt': s.belt,
-                'status': 'inactivo',
-                'is_active': False,
-                'overdue_total': 0,
-                'balance_total': 0,
-                'debt_detail': '',
-                'credit_total': 0,
-                'period_generated_credit': 0,
-                'last_payment': None,
-            })
-            continue
-        
+        if period_filter:
+            is_active_in_period = _get_student_status_for_period(s.id, period_filter['period'])
+        else:
+            is_active_in_period = _get_student_status_for_period(s.id, current_period)
+
         st_charges = charges_by_student.get(s.id, [])
-        
-        # CORRECCIÓN CRÍTICA: Calcular descuentos/recargos aplicados a las cuotas de este alumno
-        st_charge_ids = [c.id for c in st_charges]
-        st_charge_adjustments = _get_charge_adjustments_from_payments(st_charge_ids, s.id)
-        
-        # Pasar charge_adjustments para que use la lógica correcta (subtotal - descuento + recargo - pagado)
-        financials = _build_charge_financials(st_charges, paid_by_charge, student_credit=student_credit_map.get(s.id, 0.0), today_value=today, charge_adjustments=st_charge_adjustments)
+
+        if period_filter:
+            st_charge_adjustments = {}
+            student_credit_for_calc = 0.0
+        else:
+            st_charge_ids = [c.id for c in st_charges]
+            st_charge_adjustments = _get_charge_adjustments_from_payments(st_charge_ids, s.id)
+            student_credit_for_calc = student_credit_map.get(s.id, 0.0)
+
+        financials = _build_charge_financials(
+            st_charges,
+            paid_by_charge,
+            student_credit=student_credit_for_calc,
+            today_value=today,
+            charge_adjustments=st_charge_adjustments,
+        )
         period_charge_total = 0.0
         if period_filter:
             for c in st_charges:
@@ -1527,13 +1704,18 @@ def api_fees_overview():
         if period_filter:
             selected_period = period_filter['period']
             period_charge = next((c for c in st_charges if c.period == selected_period), None)
-            
-            if period_charge:
+
+            if not is_active_in_period:
+                status = 'inactivo'
+            elif period_charge:
                 charge_meta = financials['by_charge_id'].get(period_charge.id, {})
                 outstanding = float(charge_meta.get('outstanding_balance', 0.0))
+                paid_amount = float(charge_meta.get('paid', 0.0))
                 
                 if outstanding <= 0:
                     status = 'al_dia'
+                elif paid_amount > 0:
+                    status = 'parcial'
                 else:
                     # Regla de negocio: día 1-10 = pendiente, después del día 10 = vencida
                     year = period_filter['year']
@@ -1555,13 +1737,15 @@ def api_fees_overview():
                 else:
                     status = 'pendiente'
         else:
-            # Lógica general (sin filtro de período) - solo alumnos activos
-            if not st_charges or financials['positive_charges_count'] == 0:
+            # Lógica general (sin filtro de período)
+            if not is_active_in_period:
+                status = 'inactivo'
+            elif not st_charges or financials['positive_charges_count'] == 0:
                 status = 'pendiente'  # Activo sin cuotas → pendiente
-            elif financials['overdue_total'] > 0:
-                status = 'vencida'
             elif financials['has_partial']:
                 status = 'parcial'
+            elif financials['overdue_total'] > 0:
+                status = 'vencida'
             elif financials['balance_total'] > 0:
                 status = 'pendiente'
             else:
@@ -1592,7 +1776,7 @@ def api_fees_overview():
             'first_name': s.first_name,
             'belt': s.belt,
             'status': status,
-            'is_active': is_active,
+            'is_active': is_active_in_period,
             'overdue_total': round(financials['overdue_total'], 2),
             'balance_total': round(financials['balance_total'], 2),
             'debt_detail': debt_detail,
@@ -1807,8 +1991,8 @@ def api_fees_register_payment(student_id: int):
         amount = float(amount_raw or 0)
     except Exception:
         amount = 0
-    if amount < 0:
-        amount = 0
+    if amount <= 0:
+        return jsonify({'error': 'El monto abonado debe ser mayor a 0.'}), 400
 
     discount_type = body.get('discount_type')
     if discount_type not in ('percent', 'fixed'):
@@ -1870,8 +2054,30 @@ def api_fees_register_payment(student_id: int):
             charges_q = charges_q.filter(FeeCharge.id.in_(normalized))
     charges = charges_q.order_by(FeeCharge.due_date.asc()).all()
 
+    if not charges:
+        db.session.rollback()
+        return jsonify({'error': 'No hay cuotas seleccionadas para aplicar el pago.'}), 400
+
     allocated_map = _get_charge_allocated_amounts([c.id for c in charges])
+    total_pending_selected = 0.0
+    for c in charges:
+        total = float(c.final_amount or 0)
+        already = float(allocated_map.get(c.id, 0.0))
+        remaining_charge = round(total - already, 2)
+        if remaining_charge > 0:
+            total_pending_selected += remaining_charge
+
+    total_pending_selected = round(total_pending_selected, 2)
+    if total_pending_selected <= 0:
+        db.session.rollback()
+        return jsonify({'error': 'Las cuotas seleccionadas ya están saldadas.'}), 400
+
+    if round(amount, 2) > total_pending_selected:
+        db.session.rollback()
+        return jsonify({'error': f'El monto abonado (${round(amount, 2):.2f}) supera el saldo pendiente seleccionado (${total_pending_selected:.2f}).'}), 400
+
     remaining_payment = round(amount, 2)
+    allocated_any = False
 
     for c in charges:
         if remaining_payment <= 0:
@@ -1887,7 +2093,12 @@ def api_fees_register_payment(student_id: int):
             continue
 
         db.session.add(FeeAllocation(payment_id=payment.id, charge_id=c.id, amount=round(applied, 2)))
+        allocated_any = True
         remaining_payment = round(remaining_payment - applied, 2)
+
+    if not allocated_any:
+        db.session.rollback()
+        return jsonify({'error': 'No se pudo aplicar el pago a cuotas pendientes.'}), 400
 
     db.session.commit()
     return jsonify(_serialize_student_fees(student_id))
