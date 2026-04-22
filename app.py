@@ -462,28 +462,44 @@ def api_student_detail(student_id: int):
         return jsonify({'status': 'ok'})
 
     if request.method == 'DELETE':
-        # Borramos primero todas las cuotas asociadas a este alumno
+        # Borrado seguro con limpieza de relaciones para evitar errores de FK.
         try:
             _ensure_fees_tables()
         except Exception:
             pass
 
         try:
+            payment_ids_q = db.session.query(FeePayment.id).filter_by(student_id=student.id)
+            charge_ids_q = db.session.query(FeeCharge.id).filter_by(student_id=student.id)
+
+            # Asignaciones asociadas a pagos/cuotas del alumno
             FeeAllocation.query.filter(
-                FeeAllocation.payment_id.in_(
-                    db.session.query(FeePayment.id).filter_by(student_id=student.id)
-                )
+                FeeAllocation.payment_id.in_(payment_ids_q)
             ).delete(synchronize_session=False)
+            FeeAllocation.query.filter(
+                FeeAllocation.charge_id.in_(charge_ids_q)
+            ).delete(synchronize_session=False)
+
+            # Módulo cuotas
             FeePayment.query.filter_by(student_id=student.id).delete()
             FeeCharge.query.filter_by(student_id=student.id).delete()
             StudentFeeSettings.query.filter_by(student_id=student.id).delete()
-        except Exception:
-            # Si las tablas no existen aún o hay algún problema, seguimos con el borrado del alumno.
-            db.session.rollback()
+            StudentStatusHistory.query.filter_by(student_id=student.id).delete()
 
-        # Luego borramos el alumno en sí
-        db.session.delete(student)
-        db.session.commit()
+            # Módulo exámenes/calendario
+            ExamInscription.query.filter_by(student_id=student.id).delete()
+
+            # Finalmente, alumno
+            db.session.delete(student)
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            return jsonify({
+                'error': 'No se puede eliminar el alumno porque tiene registros relacionados protegidos. Eliminá primero sus vínculos pendientes e intentá nuevamente.'
+            }), 409
+        except Exception:
+            db.session.rollback()
+            return jsonify({'error': 'No se pudo eliminar el alumno. Intentá nuevamente.'}), 500
 
         return '', 204
 
