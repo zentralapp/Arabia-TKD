@@ -41,6 +41,7 @@ body.app-body {
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background-color: var(--bg-dark);
   color: var(--tkd-white);
+  overflow-x: hidden;
 }
 
 .tkd-title,
@@ -1349,6 +1350,117 @@ body.app-body {
   min-width: 0;
 }
 
+.fees-student-modal {
+  z-index: 45;
+}
+
+.fees-student-modal-dialog {
+  width: min(1040px, 92vw);
+  max-width: 1040px;
+  max-height: 90vh;
+  padding: 0;
+  background: linear-gradient(145deg, #2f3448 0%, #242730 100%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.fees-student-modal-body {
+  max-height: calc(90vh - 62px);
+  overflow: auto;
+  padding: 12px;
+}
+
+.fees-student-modal-body .fees-student-content {
+  border-top: 0;
+  padding-top: 0;
+}
+
+body.app-body.fees-student-modal-open {
+  overflow: hidden;
+}
+
+.fees-student-modal .modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin-bottom: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(145deg, #2c3144 0%, #232834 100%);
+}
+
+.fees-modal-student-header-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.18);
+  margin-bottom: 10px;
+}
+
+.fees-modal-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.fees-modal-column {
+  min-width: 0;
+}
+
+.fees-modal-column-left,
+.fees-modal-column-right {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fees-modal-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.fees-modal-section-title {
+  margin-top: 0;
+}
+
+.fees-modal-table-wrapper {
+  margin-top: 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 190px;
+}
+
+.fees-modal-table-wrapper-charges {
+  max-height: 220px;
+}
+
+.fees-empty-card {
+  margin: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.fees-modal-payment-form {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.fees-summary-balance-highlight {
+  font-size: 1.06rem;
+  color: #ffffff;
+  border-top-color: rgba(198, 40, 40, 0.35);
+}
+
+.fees-summary-balance-highlight span:last-child {
+  color: #f9d7d7;
+}
+
 .fees-student-header {
   display: flex;
   align-items: flex-start;
@@ -1394,6 +1506,17 @@ body.app-body {
   padding: 6px 10px;
   font-size: 0.68rem;
   white-space: nowrap;
+}
+
+.fees-overview-table td:nth-child(2),
+.fees-overview-table td:nth-child(4) {
+  white-space: normal;
+  word-break: break-word;
+}
+
+.fees-debt-period {
+  display: block;
+  margin-top: 2px;
 }
 
 .fees-search-input {
@@ -1822,11 +1945,55 @@ body.app-body {
 
 @media (max-width: 480px) {
   .app-main {
-    padding: 8px 8px 80px;
+    padding: 8px 8px 104px;
+  }
+
+  .app-header-main {
+    padding: 8px 8px 7px;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .app-header-logo {
+    width: 56px;
+    height: 56px;
+  }
+
+  .tkd-title {
+    font-size: 1.04rem;
+    letter-spacing: 0.14em;
+    line-height: 1.1;
+  }
+
+  .tkd-title-sub {
+    font-size: 1rem;
+    letter-spacing: 0.2em;
+    line-height: 1.05;
+  }
+
+  .app-header-motto {
+    font-size: 0.52rem;
+    letter-spacing: 0.24em;
+    max-width: 112px;
+    line-height: 1.3;
+    padding-top: 2px;
   }
 
   .panel.martial-panel {
     padding: 12px 12px 14px;
+  }
+
+  .panel-content {
+    padding: 12px 10px 16px;
+  }
+
+  .section-header {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .section-header .btn-martial {
+    max-width: 100%;
   }
 
   .section-heading {
@@ -1845,24 +2012,180 @@ body.app-body {
     grid-template-columns: 1fr;
   }
 
+  .students-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .students-filter-field {
+    min-width: 0;
+    margin-right: 0;
+    width: 100%;
+  }
+
+  .students-filter-field select {
+    width: 100%;
+    min-width: 0;
+  }
+
   .exam-pdf-actions {
     flex-direction: column;
     align-items: stretch;
   }
 
-  /* Alumnos: hacer la tabla más legible en pantallas chicas */
-  .table-wrapper {
-    max-height: none;
-    overflow-x: auto;
+  /* Alumnos: tabla compacta y legible en móvil */
+  .students-main-table {
+    table-layout: fixed;
   }
 
-  .students-table {
-    font-size: 0.7rem;
+  .students-main-table th,
+  .students-main-table td {
+    font-size: 0.67rem;
+    padding: 4px 3px;
+    line-height: 1.2;
+    white-space: normal;
+    word-break: break-word;
   }
 
-  .students-table th,
-  .students-table td {
-    padding: 4px 4px;
+  .students-main-table th:nth-child(1),
+  .students-main-table td:nth-child(1) {
+    width: 28px;
+    text-align: center;
+  }
+
+  .students-main-table th:nth-child(2),
+  .students-main-table td:nth-child(2),
+  .students-main-table th:nth-child(3),
+  .students-main-table td:nth-child(3) {
+    width: 18%;
+  }
+
+  .students-main-table th:nth-child(4),
+  .students-main-table td:nth-child(4) {
+    width: 9%;
+    text-align: center;
+  }
+
+  .students-main-table th:nth-child(5),
+  .students-main-table td:nth-child(5) {
+    width: 20%;
+  }
+
+  .students-main-table th:nth-child(6),
+  .students-main-table td:nth-child(6) {
+    width: 19%;
+  }
+
+  .students-main-table th:nth-child(7),
+  .students-main-table td:nth-child(7) {
+    display: none;
+  }
+
+  .students-main-table th:nth-child(8),
+  .students-main-table td:nth-child(8) {
+    width: 16%;
+    min-width: 84px;
+  }
+
+  .belt-pill {
+    max-width: 100%;
+    white-space: normal;
+    text-align: center;
+    justify-content: center;
+    line-height: 1.1;
+    padding: 2px 6px;
+    font-size: 0.62rem;
+  }
+
+  .students-status-cell {
+    gap: 3px;
+  }
+
+  .student-status-pill {
+    font-size: 0.58rem;
+    padding: 2px 6px;
+    letter-spacing: 0.1em;
+  }
+
+  .students-menu-btn {
+    font-size: 0.8rem;
+  }
+
+  /* Cuotas: acciones arriba, resumen abajo en móvil */
+  .fees-layout {
+    gap: 10px;
+  }
+
+  .fees-column-right {
+    order: 1;
+  }
+
+  .fees-column-left {
+    order: 2;
+  }
+
+  .btn-fees-history-header {
+    width: 100%;
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    padding: 8px 10px;
+  }
+
+  .fees-column-left .table-wrapper {
+    overflow-x: hidden;
+  }
+
+  .fees-overview-table {
+    table-layout: fixed;
+  }
+
+  .fees-overview-table th,
+  .fees-overview-table td {
+    font-size: 0.66rem;
+    padding: 4px 3px;
+    line-height: 1.2;
+    vertical-align: top;
+  }
+
+  .fees-overview-table th:nth-child(1),
+  .fees-overview-table td:nth-child(1) {
+    width: 28px;
+  }
+
+  .fees-overview-table th:nth-child(2),
+  .fees-overview-table td:nth-child(2) {
+    width: 34%;
+  }
+
+  .fees-overview-table th:nth-child(3),
+  .fees-overview-table td:nth-child(3) {
+    width: 20%;
+  }
+
+  .fees-overview-table th:nth-child(4),
+  .fees-overview-table td:nth-child(4) {
+    width: 27%;
+  }
+
+  .fees-overview-table th:nth-child(5),
+  .fees-overview-table td:nth-child(5) {
+    width: 19%;
+    text-align: right;
+  }
+
+  .fees-overview-pay-btn {
+    width: 100%;
+    min-height: 30px;
+    padding: 4px 7px;
+    font-size: 0.62rem;
+    letter-spacing: 0.12em;
+  }
+
+  .status-pill {
+    font-size: 0.62rem;
+    padding: 2px 6px;
   }
 
   /* Cuotas: evitar superposición de acciones y estado */
@@ -1903,6 +2226,52 @@ body.app-body {
 
   .fees-bulk-form .form-actions {
     margin-top: 12px;
+  }
+
+  .fees-student-modal-dialog {
+    width: calc(100vw - 8px);
+    max-width: calc(100vw - 8px);
+    max-height: calc(100vh - 56px);
+    margin-top: 4px;
+    border-radius: 8px 8px 0 0;
+    padding: 8px 8px 10px;
+  }
+
+  .fees-student-modal-body {
+    max-height: calc(100vh - 132px);
+    padding-bottom: 14px;
+  }
+
+  .fees-student-modal .fees-payments-table,
+  .fees-student-modal .fees-charges-table {
+    font-size: 0.64rem;
+  }
+
+  .fees-student-modal .fees-payments-table th,
+  .fees-student-modal .fees-payments-table td,
+  .fees-student-modal .fees-charges-table th,
+  .fees-student-modal .fees-charges-table td {
+    padding: 4px 3px;
+    line-height: 1.2;
+  }
+
+  .fees-student-modal .fees-payments-table th:nth-child(7),
+  .fees-student-modal .fees-payments-table td:nth-child(7) {
+    display: none;
+  }
+
+  .fees-student-modal .fees-payment-form .form-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .fees-student-modal .fees-payment-form .form-actions {
+    position: sticky;
+    bottom: 0;
+    background: linear-gradient(180deg, rgba(36, 39, 48, 0.4), rgba(36, 39, 48, 0.98));
+    padding-top: 10px;
+    margin-top: 10px;
+    z-index: 1;
   }
 
   .btn-martial,
@@ -1963,6 +2332,49 @@ body.app-body {
 
   .fees-column-right {
     flex: 1.05;
+  }
+
+  .fees-student-modal-dialog {
+    width: min(1040px, 92vw);
+  }
+}
+
+@media (max-width: 767px) {
+  .fees-student-modal {
+    align-items: stretch;
+  }
+
+  .fees-student-modal-dialog {
+    width: calc(100vw - 8px);
+    max-width: calc(100vw - 8px);
+    max-height: calc(100vh - 8px);
+    border-radius: 10px;
+    margin: 4px auto;
+  }
+
+  .fees-student-modal-body {
+    max-height: calc(100vh - 76px);
+    padding: 10px;
+    overflow-x: hidden;
+  }
+
+  .fees-modal-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .fees-modal-table-wrapper,
+  .fees-modal-table-wrapper-charges {
+    max-height: 180px;
+  }
+
+  .fees-modal-card {
+    padding: 9px 10px;
+  }
+
+  .fees-student-modal .btn-icon {
+    min-width: 34px;
+    min-height: 34px;
+    font-size: 1rem;
   }
 }
 

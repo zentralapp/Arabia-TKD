@@ -1795,6 +1795,8 @@ const feesStudentBeltEl = document.getElementById('fees-student-belt');
 const feesStudentCreditBanner = document.getElementById('fees-student-credit-banner');
 const feesStudentStatusEl = document.getElementById('fees-student-status');
 const feesFeedback = document.getElementById('fees-feedback');
+const modalFeesStudentDetail = document.getElementById('modal-fees-student-detail');
+const btnCloseFeesStudentModal = document.getElementById('btn-close-fees-student-modal');
 const modalFeeChargeDelete = document.getElementById('modal-fee-charge-delete');
 const btnCloseFeeChargeDelete = document.getElementById('btn-close-fee-charge-delete');
 const btnCancelFeeChargeDelete = document.getElementById('btn-cancel-fee-charge-delete');
@@ -1817,6 +1819,11 @@ const feesPaymentDate = document.getElementById('fees-payment-date');
 const feesPaymentNotes = document.getElementById('fees-payment-notes');
 const feesPaymentAmount = document.getElementById('fees-payment-amount');
 const feesPaymentChargeTotal = document.getElementById('fees-payment-charge-total');
+const feesPaymentChargeDiscountRow = document.getElementById('fees-payment-charge-discount-row');
+const feesPaymentChargeDiscount = document.getElementById('fees-payment-charge-discount');
+const feesPaymentChargeSurchargeRow = document.getElementById('fees-payment-charge-surcharge-row');
+const feesPaymentChargeSurcharge = document.getElementById('fees-payment-charge-surcharge');
+const feesPaymentChargeAdjustedTotal = document.getElementById('fees-payment-charge-adjusted-total');
 const feesPaymentChargePaid = document.getElementById('fees-payment-charge-paid');
 const feesPaymentChargeBalance = document.getElementById('fees-payment-charge-balance');
 const feesPaymentAmountPreview = document.getElementById('fees-payment-amount-preview');
@@ -1892,10 +1899,29 @@ function closeFeePaymentDeleteModal() {
   pendingFeePaymentDelete = null;
 }
 
+function openFeesStudentModal() {
+  document.body.classList.add('fees-student-modal-open');
+  modalFeesStudentDetail?.classList.remove('hidden');
+}
+
+function closeFeesStudentModal() {
+  document.body.classList.remove('fees-student-modal-open');
+  modalFeesStudentDetail?.classList.add('hidden');
+}
+
 btnCloseFeeChargeDelete?.addEventListener('click', closeFeeChargeDeleteModal);
 btnCancelFeeChargeDelete?.addEventListener('click', closeFeeChargeDeleteModal);
 btnCloseFeePaymentDelete?.addEventListener('click', closeFeePaymentDeleteModal);
 btnCancelFeePaymentDelete?.addEventListener('click', closeFeePaymentDeleteModal);
+btnCloseFeesStudentModal?.addEventListener('click', closeFeesStudentModal);
+modalFeesStudentDetail?.querySelector('.modal-backdrop')?.addEventListener('click', closeFeesStudentModal);
+
+window.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  if (modalFeesStudentDetail && !modalFeesStudentDetail.classList.contains('hidden')) {
+    closeFeesStudentModal();
+  }
+});
 
 btnConfirmFeeChargeDelete?.addEventListener('click', async () => {
   if (!pendingFeeChargeDelete || pendingFeeChargeDelete.id == null) {
@@ -2146,6 +2172,11 @@ function updateFeesPaymentSummary() {
     if (feesPaymentSurcharge) feesPaymentSurcharge.textContent = '+$0';
     if (feesPaymentTotal) feesPaymentTotal.textContent = '$0';
     if (feesPaymentChargeTotal) feesPaymentChargeTotal.textContent = '$0';
+    feesPaymentChargeDiscountRow?.classList.add('hidden');
+    if (feesPaymentChargeDiscount) feesPaymentChargeDiscount.textContent = '-$0';
+    feesPaymentChargeSurchargeRow?.classList.add('hidden');
+    if (feesPaymentChargeSurcharge) feesPaymentChargeSurcharge.textContent = '+$0';
+    if (feesPaymentChargeAdjustedTotal) feesPaymentChargeAdjustedTotal.textContent = '$0';
     if (feesPaymentChargePaid) feesPaymentChargePaid.textContent = '$0';
     if (feesPaymentChargeBalance) feesPaymentChargeBalance.textContent = '$0';
     if (feesPaymentAmountPreview) feesPaymentAmountPreview.textContent = '$0';
@@ -2154,23 +2185,20 @@ function updateFeesPaymentSummary() {
   
   const selectedCharges = getSelectedFeesCharges();
   const chargeTotal = selectedCharges.reduce((sum, charge) => sum + Number(charge.final_amount || 0), 0);
+  const chargeDiscountAppliedPersisted = selectedCharges.reduce((sum, charge) => sum + Number(charge.discount_applied || 0), 0);
+  const chargeSurchargeAppliedPersisted = selectedCharges.reduce((sum, charge) => sum + Number(charge.surcharge_applied || 0), 0);
   const paidTotal = selectedCharges.reduce((sum, charge) => sum + Number(charge.paid_amount || 0), 0);
   const pendingTotal = selectedCharges.reduce((sum, charge) => {
     const balance = Number(charge.outstanding_balance ?? charge.balance ?? 0);
     return sum + (balance > 0 ? balance : 0);
   }, 0);
 
-  if (feesPaymentAmount && feesPaymentAmount.dataset.dirty !== '1') {
-    setFormattedMoneyValue(feesPaymentAmount, pendingTotal);
-  }
+  const subtotal = pendingTotal;
 
-  const enteredAmount = parseFormattedAmount(feesPaymentAmount?.value || 0);
-  const subtotal = enteredAmount > 0 ? enteredAmount : pendingTotal;
-  
   let discountAmount = 0;
   const discountType = feesDiscountType?.value || '';
   const discountValue = parseFormattedAmount(feesDiscountValue?.value || 0);
-  
+
   if (discountType && discountValue > 0) {
     if (discountType === 'percent') {
       const percent = Math.min(discountValue, 100);
@@ -2179,11 +2207,11 @@ function updateFeesPaymentSummary() {
       discountAmount = Math.min(discountValue, subtotal);
     }
   }
-  
+
   let surchargeAmount = 0;
   const surchargeType = feesSurchargeType?.value || '';
   const surchargeValue = parseFormattedAmount(feesSurchargeValue?.value || 0);
-  
+
   if (surchargeType && surchargeValue > 0) {
     if (surchargeType === 'percent') {
       surchargeAmount = subtotal * (surchargeValue / 100);
@@ -2191,8 +2219,19 @@ function updateFeesPaymentSummary() {
       surchargeAmount = surchargeValue;
     }
   }
-  
+
   const total = Math.max(subtotal - discountAmount + surchargeAmount, 0);
+  const chargeDiscountApplied = Math.max(chargeDiscountAppliedPersisted + discountAmount, 0);
+  const chargeSurchargeApplied = Math.max(chargeSurchargeAppliedPersisted + surchargeAmount, 0);
+  const chargeAdjustedTotal = Math.max(chargeTotal - chargeDiscountApplied + chargeSurchargeApplied, 0);
+
+  if (feesPaymentAmount && feesPaymentAmount.dataset.dirty !== '1') {
+    setFormattedMoneyValue(feesPaymentAmount, total);
+  }
+
+  const enteredAmount = parseFormattedAmount(feesPaymentAmount?.value || 0);
+  const amountNow = enteredAmount > 0 ? enteredAmount : total;
+  const projectedBalance = Math.max(chargeAdjustedTotal - paidTotal - amountNow, 0);
   
   // Actualizar valores
   feesPaymentSubtotal.textContent = `$${formatCurrencyDisplay(subtotal)}`;
@@ -2200,27 +2239,30 @@ function updateFeesPaymentSummary() {
   feesPaymentSurcharge.textContent = surchargeAmount > 0 ? `+$${formatCurrencyDisplay(surchargeAmount)}` : '$0,00';
   feesPaymentTotal.textContent = `$${formatCurrencyDisplay(total)}`;
   if (feesPaymentChargeTotal) feesPaymentChargeTotal.textContent = `$${formatCurrencyDisplay(chargeTotal)}`;
+  if (feesPaymentChargeDiscount) feesPaymentChargeDiscount.textContent = `-$${formatCurrencyDisplay(chargeDiscountApplied)}`;
+  if (feesPaymentChargeSurcharge) feesPaymentChargeSurcharge.textContent = `+$${formatCurrencyDisplay(chargeSurchargeApplied)}`;
+  if (feesPaymentChargeAdjustedTotal) feesPaymentChargeAdjustedTotal.textContent = `$${formatCurrencyDisplay(chargeAdjustedTotal)}`;
   if (feesPaymentChargePaid) feesPaymentChargePaid.textContent = `$${formatCurrencyDisplay(paidTotal)}`;
-  if (feesPaymentChargeBalance) feesPaymentChargeBalance.textContent = `$${formatCurrencyDisplay(pendingTotal)}`;
-  if (feesPaymentAmountPreview) feesPaymentAmountPreview.textContent = `$${formatCurrencyDisplay(subtotal)}`;
+  if (feesPaymentChargeBalance) feesPaymentChargeBalance.textContent = `$${formatCurrencyDisplay(projectedBalance)}`;
+  if (feesPaymentAmountPreview) feesPaymentAmountPreview.textContent = `$${formatCurrencyDisplay(amountNow)}`;
+
+  feesPaymentChargeDiscountRow?.classList.toggle('hidden', chargeDiscountApplied <= 0);
+  feesPaymentChargeSurchargeRow?.classList.toggle('hidden', chargeSurchargeApplied <= 0);
   
-  // NUEVO: Mostrar/ocultar renglones según modo de ajuste seleccionado
+  // Mostrar/ocultar renglones de resumen de ajuste aplicado en este pago
   const selectedMode = document.querySelector('input[name="fees-adjustment-mode"]:checked')?.value || 'none';
   const discountRow = document.getElementById('fees-summary-discount-row');
   const surchargeRow = document.getElementById('fees-summary-surcharge-row');
   
-  if (selectedMode === 'none') {
-    // Sin ajuste: ocultar ambos renglones
-    discountRow?.classList.add('hidden');
-    surchargeRow?.classList.add('hidden');
-  } else if (selectedMode === 'discount') {
-    // Descuento: mostrar solo descuento
+  if (selectedMode === 'discount' && discountAmount > 0) {
     discountRow?.classList.remove('hidden');
     surchargeRow?.classList.add('hidden');
-  } else if (selectedMode === 'surcharge') {
-    // Recargo: mostrar solo recargo
+  } else if (selectedMode === 'surcharge' && surchargeAmount > 0) {
     discountRow?.classList.add('hidden');
     surchargeRow?.classList.remove('hidden');
+  } else {
+    discountRow?.classList.add('hidden');
+    surchargeRow?.classList.add('hidden');
   }
 }
 
@@ -2305,13 +2347,6 @@ function renderFeesOverview() {
     }
 
     const name = row.full_name || `${row.last_name || ''} ${row.first_name || ''}`;
-    const isActive = row.is_active !== false;
-    const activeToggle = document.createElement('span');
-    activeToggle.className = isActive ? 'fees-active-toggle active' : 'fees-active-toggle inactive';
-    activeToggle.textContent = isActive ? 'Activo' : 'Inactivo';
-    activeToggle.dataset.studentId = row.student_id;
-    activeToggle.style.cursor = 'pointer';
-    
     const statusCell = document.createElement('td');
     statusCell.appendChild(feesStatusToPill(row.status));
     const signedBalance = Number(row.balance_total || 0);
@@ -2321,14 +2356,12 @@ function renderFeesOverview() {
     const displayedCredit = periodGeneratedCredit > 0 ? periodGeneratedCredit : creditAmount;
     
     let balanceLabel = 'Sin deuda';
-    if (row.status === 'inactivo') {
-      balanceLabel = '-';
-    } else if (displayedCredit > 0) {
+    if (displayedCredit > 0) {
       balanceLabel = 'Sin deuda';  // Color blanco consistente, sin clase verde
     } else if (dueAmount > 0) {
       const debtDetail = row.debt_detail || '';
       balanceLabel = debtDetail 
-        ? `$${formatCurrencyDisplay(dueAmount)} · ${debtDetail}`
+        ? `$${formatCurrencyDisplay(dueAmount)}<span class="fees-debt-period">${debtDetail}</span>`
         : `$${formatCurrencyDisplay(dueAmount)}`;
     }
 
@@ -2336,12 +2369,10 @@ function renderFeesOverview() {
       <td>${index + 1}</td>
       <td>${name}</td>
       <td></td>
-      <td></td>
       <td>${balanceLabel}</td>
       <td><button type="button" class="btn-martial fees-overview-pay-btn">Abonar</button></td>
     `;
-    tr.children[2].appendChild(activeToggle);
-    tr.children[3].appendChild(statusCell.firstChild);
+    tr.children[2].appendChild(statusCell.firstChild);
 
     const payBtn = tr.querySelector('.fees-overview-pay-btn');
     if (payBtn) {
@@ -2374,6 +2405,7 @@ async function loadFeesOverview() {
 async function selectFeesStudent(studentId) {
   feesSelectedStudentId = Number(studentId);
   renderFeesOverview();
+  openFeesStudentModal();
   await loadFeesStudentDetail();
 }
 
@@ -2482,7 +2514,7 @@ function renderFeesStudentDetail(data) {
   });
   
   // Renderizar cuotas pendientes (solo con saldo)
-  const pendingCharges = visibleCharges.filter(c => Number(c.balance || 0) > 0);
+  const pendingCharges = visibleCharges.filter((c) => Number(c.outstanding_balance ?? c.balance ?? 0) > 0);
   if (feesChargesTbody) feesChargesTbody.innerHTML = '';
   if (feesChargesEmpty) {
     feesChargesEmpty.textContent = feesCurrentPeriodFilter
@@ -2492,7 +2524,7 @@ function renderFeesStudentDetail(data) {
   }
   pendingCharges.forEach((c) => {
     const tr = document.createElement('tr');
-    const chargeBalance = Number(c.balance || 0);
+    const chargeBalance = Number(c.outstanding_balance ?? c.balance ?? 0);
     const chargeBalanceLabel = chargeBalance < 0
       ? `<span class="fees-credit-text">A favor $${formatCurrencyDisplay(Math.abs(chargeBalance))}</span>`
       : `$${formatCurrencyDisplay(chargeBalance)}`;
@@ -2631,12 +2663,7 @@ feesPaymentForm?.addEventListener('submit', async (e) => {
     return;
   }
 
-  if (enteredAmount > selectedPendingTotal) {
-    showFeesFeedback(`El monto abonado supera el saldo pendiente seleccionado ($${formatCurrencyDisplay(selectedPendingTotal)}).`, 'error');
-    return;
-  }
-
-  const subtotal = enteredAmount;
+  const subtotal = selectedPendingTotal;
 
   const discountType = feesDiscountType?.value || '';
   const discountValue = parseFormattedAmount(feesDiscountValue?.value || 0);
@@ -2670,14 +2697,14 @@ feesPaymentForm?.addEventListener('submit', async (e) => {
     return;
   }
 
-  if (totalAmount > selectedPendingTotal) {
-    showFeesFeedback(`El total a pagar supera el saldo pendiente seleccionado ($${formatCurrencyDisplay(selectedPendingTotal)}).`, 'error');
+  if (enteredAmount > totalAmount) {
+    showFeesFeedback(`El monto abonado supera el total ajustado a pagar ($${formatCurrencyDisplay(totalAmount)}).`, 'error');
     return;
   }
 
   const payload = {
     payment_date: feesPaymentDate?.value || undefined,
-    amount: totalAmount,
+    amount: enteredAmount,
     subtotal: subtotal,
     discount_type: discountType || null,
     discount_value: discountType && discountValue > 0 ? discountValue : 0,
@@ -2724,29 +2751,6 @@ feesPaymentForm?.addEventListener('submit', async (e) => {
 feesSearchInput?.addEventListener('input', () => {
   renderFeesOverview();
 });
-
-// Listener para toggle activo/inactivo
-if (feesOverviewTbody) {
-  feesOverviewTbody.addEventListener('click', async (e) => {
-    if (e.target.classList.contains('fees-active-toggle')) {
-      const studentId = e.target.dataset.studentId;
-      if (!studentId) return;
-      
-      try {
-        // CORRECCIÓN: Pasar el período seleccionado para que el cambio aplique solo a ese mes
-        const period = feesCurrentPeriodFilter || `${feesCurrentYear}-${String(feesCurrentMonth + 1).padStart(2, '0')}`;
-        await apiSend(`/api/students/${studentId}/toggle-active`, 'PUT', { period });
-        await loadFeesOverview();
-        if (Number(studentId) === Number(feesSelectedStudentId)) {
-          await loadFeesStudentDetail();
-        }
-      } catch (err) {
-        console.error(err);
-        showFeesFeedback(err?.message || 'No se pudo cambiar el estado del alumno.', 'error');
-      }
-    }
-  });
-}
 
 // NUEVA LÓGICA: Manejar radio buttons de ajuste unificado
 const feesAdjustmentRadios = document.querySelectorAll('input[name="fees-adjustment-mode"]');
